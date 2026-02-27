@@ -1,0 +1,115 @@
+name: 🚀 EAS Build & Deploy
+
+on:
+  push:
+    branches:
+      - main          # production
+      - develop       # preview
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ──────────────────────────────────────────────────
+  # BUILD PREVIEW (push sur develop)
+  # ──────────────────────────────────────────────────
+  build-preview:
+    name: Build Preview (APK)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🔧 Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 🛠️ Build APK preview
+        run: eas build --platform android --profile preview --non-interactive
+        env:
+          EXPO_PUBLIC_SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+  # ──────────────────────────────────────────────────
+  # BUILD PRODUCTION (push sur main)
+  # ──────────────────────────────────────────────────
+  build-production:
+    name: Build Production (AAB + IPA)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🔧 Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 🛠️ Build Android (AAB)
+        run: eas build --platform android --profile production --non-interactive
+        env:
+          EXPO_PUBLIC_SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: 📊 OTA Update (Expo)
+        run: eas update --channel production --message "Release ${{ github.sha }}"
+        env:
+          EXPO_PUBLIC_SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+  # ──────────────────────────────────────────────────
+  # WEB (Vercel via GitHub)
+  # ──────────────────────────────────────────────────
+  deploy-web:
+    name: Deploy Web (Vercel)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🌐 Build Web
+        run: npx expo export --platform web
+        env:
+          EXPO_PUBLIC_SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: 🚀 Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token:   ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id:  ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: dist
+          vercel-args: --prod
