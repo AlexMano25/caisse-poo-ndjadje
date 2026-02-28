@@ -1,7 +1,8 @@
 import React,{createContext,useContext,useState} from 'react';
+import { useAuth } from './AuthContext';
 import {
   MOCK_MEMBERS, MOCK_TONTINE, MOCK_HISTORIQUE_EPARGNE,
-  MOCK_PRETS, MOCK_RECAPITULATIF, CURRENT_USER
+  MOCK_PRETS, MOCK_RECAPITULATIF
 } from '../data/mockData';
 
 // Rapports initiaux de la Caisse POO NDJADJE
@@ -20,16 +21,30 @@ const RAPPORTS_INITIAUX = [
     content:'Seance annuelle du 15/11/2025.\nTotal epargne 2025: 6 270 793 FCFA.\nTotal interets epargne: 1 439 368 FCFA.\nRetenues (1.5%): 355 942 FCFA.\nSolde final membres: 7 710 161 FCFA.\nPrets en cours: 9 prets pour 9 556 200 FCFA.\nTotal a rembourser: 10 272 915 FCFA.\nDecisions: renouvellement bureau, prochaine seance 28/02/2026.', isPublished:true },
 ];
 
+const MESSAGES_INITIAUX = [
+  {
+    id: 'msg-001',
+    titre: 'Bienvenue sur Caisse POO NDJADJE 🎉',
+    contenu: 'L’application de gestion de notre tontine est maintenant disponible. Connectez-vous et consultez votre espace personnel.',
+    type: 'info',
+    auteur: 'Djoubi Soline',
+    role: 'president',
+    date: '28/02/2026',
+    lus: [],
+  },
+];
+
 const AppContext = createContext();
 
 export const AppProvider = ({children}) => {
-  const [currentUser]    = useState(CURRENT_USER);
+  const { currentUser } = useAuth();
   const [membres, setMembres] = useState(MOCK_MEMBERS);
   const [tontine]        = useState(MOCK_TONTINE);
   const [historique, setHistorique] = useState(MOCK_HISTORIQUE_EPARGNE);
   const [prets, setPrets] = useState(MOCK_PRETS);
   const [recap]          = useState(MOCK_RECAPITULATIF);
-  const [rapports, setRapports] = useState(RAPPORTS_INITIAUX);
+  const [rapports,  setRapports]  = useState(RAPPORTS_INITIAUX);
+  const [messages,  setMessages]  = useState(MESSAGES_INITIAUX);
 
   // Calculer intérêt épargne selon durée (taux annuel prorata)
   const calculerInteret = (montant, dateDepot, tauxAnnuel = 27.40) => {
@@ -76,11 +91,34 @@ export const AppProvider = ({children}) => {
       id: 'rpt-' + Date.now(),
       sessionNumber: rapports.length + 1,
       date: new Date().toLocaleDateString('fr-FR'),
-      author: currentUser.nom,
+      author: currentUser?.nom || '',
       title: titre, content: contenu,
       isPublished: true,
     };
     setRapports(prev => [rpt, ...prev]);
+  };
+
+  // Envoyer un message/annonce à tous les membres
+  const envoyerMessage = (titre, contenu, type = 'info') => {
+    const msg = {
+      id: 'msg-' + Date.now(),
+      titre, contenu, type,
+      auteur: currentUser?.nom || '',
+      role:   currentUser?.role || '',
+      date:   new Date().toLocaleDateString('fr-FR'),
+      lus:    [],
+    };
+    setMessages(prev => [msg, ...prev]);
+    return msg;
+  };
+
+  // Marquer un message comme lu
+  const marquerLu = (msgId, userId) => {
+    setMessages(prev => prev.map(m =>
+      m.id === msgId && !m.lus.includes(userId)
+        ? {...m, lus: [...m.lus, userId]}
+        : m
+    ));
   };
 
   // Rembourser un prêt
@@ -105,9 +143,12 @@ export const AppProvider = ({children}) => {
 
   return (
     <AppContext.Provider value={{
-      currentUser, membres, tontine, historique,
-      prets, recap, rapports, calculerInteret, calculerInteretPret,
-      ajouterEpargne, accorderPret, rembourserPret, appliquerSanction, publierRapport
+      membres, tontine, historique,
+      prets, recap, rapports, messages,
+      calculerInteret, calculerInteretPret,
+      ajouterEpargne, accorderPret, rembourserPret,
+      appliquerSanction, publierRapport,
+      envoyerMessage, marquerLu,
     }}>
       {children}
     </AppContext.Provider>

@@ -11,13 +11,6 @@
       "resizeMode": "contain",
       "backgroundColor": "#1B4332"
     },
-    "updates": {
-      "fallbackToCacheTimeout": 0,
-      "url": "https://u.expo.dev/caisse-poo-ndjadje"
-    },
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "cm.poo-ndjadje.caisse",
@@ -42,9 +35,10 @@
       "supabaseUrl": "",
       "supabaseAnonKey": "",
       "eas": {
-        "projectId": ""
+        "projectId": "74e30905-886c-42c7-b5a6-47c61e9e2c61"
       }
     },
-    "plugins": []
+    "plugins": [],
+    "owner": "mothoalex"
   }
 }

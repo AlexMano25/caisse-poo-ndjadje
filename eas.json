@@ -14,7 +14,6 @@
     },
     "preview": {
       "distribution": "internal",
-      "channel": "preview",
       "android": { "buildType": "apk" },
       "env": {
         "EXPO_PUBLIC_ENV": "preview"
@@ -22,7 +21,6 @@
     },
     "production": {
       "distribution": "store",
-      "channel": "production",
       "android": { "buildType": "app-bundle" },
       "autoIncrement": true,
       "env": {
