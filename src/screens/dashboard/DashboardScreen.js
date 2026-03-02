@@ -1,15 +1,17 @@
 import React, { useState, useMemo } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  Modal, TextInput, Alert, Dimensions,
+  Modal, TextInput, Dimensions,
 } from 'react-native';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
 import Card from '../../components/common/Card';
 import MemberAvatar from '../../components/common/MemberAvatar';
+import SimpleBarChart from '../../components/common/SimpleBarChart';
 import { COLORS, SPACING } from '../../utils/theme';
-import { webStyle, responsiveValue } from '../../utils/responsive';
+import { webStyle } from '../../utils/responsive';
 import { formatMontant } from '../../utils/calculations';
+import { webSafeInfo } from '../../utils/alert';
 
 const ROLE_LABEL = {
   superadmin: 'Super Admin', president: 'Presidente',
@@ -22,6 +24,7 @@ export default function DashboardScreen({ navigation }) {
   const { currentUser } = useAuth();
   const {
     membres, config, prets, recap, messages, seances,
+    versements, remboursements,
     envoyerMessage, marquerLu,
   } = useApp();
 
@@ -37,7 +40,7 @@ export default function DashboardScreen({ navigation }) {
   const pretsEnCours = (prets || []).filter(p => p.statut === 'en_cours');
   const totalPrets = pretsEnCours.reduce((s, p) => s + (p.montant_a_rembourser || 0), 0);
 
-  // Count active members from recap (those with positive epargne or solde)
+  // Count active members from recap
   const membresActifs = useMemo(() => {
     return (recap?.membresCalcul || []).filter(m => {
       const c = m.calcul || {};
@@ -60,6 +63,76 @@ export default function DashboardScreen({ navigation }) {
     return futures.length > 0 ? futures[0] : null;
   }, [seances]);
 
+  // ── MON COMPTE ────────────────────────────────────────────────────────
+  const monCalcul = useMemo(() => {
+    if (!recap?.membresCalcul || !currentUser?.membreId) return null;
+    return recap.membresCalcul.find(mc => mc.id === currentUser.membreId)?.calcul || null;
+  }, [recap, currentUser?.membreId]);
+
+  // Mes versements (10 derniers)
+  const mesVersements = useMemo(() => {
+    return (versements || [])
+      .filter(v => v.membre_id === currentUser?.membreId)
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+      .slice(0, 10);
+  }, [versements, currentUser?.membreId]);
+
+  // Mon pret en cours
+  const monPret = useMemo(() => {
+    return (prets || []).find(
+      p => p.membre_id === currentUser?.membreId && p.statut === 'en_cours'
+    ) || null;
+  }, [prets, currentUser?.membreId]);
+
+  // Total rembourse pour mon pret
+  const monTotalRembourse = useMemo(() => {
+    if (!monPret) return 0;
+    return (remboursements || [])
+      .filter(r => r.pret_id === monPret.id)
+      .reduce((s, r) => s + (r.montant || 0), 0);
+  }, [monPret, remboursements]);
+
+  // Previsions fin d'annee
+  const previsions = useMemo(() => {
+    const annee = config?.annee_courante || new Date().getFullYear();
+    const seancesAnnee = (seances || []).filter(s => s.annee === annee);
+    const totalSeances = seancesAnnee.length || 4;
+    const today = new Date().toISOString().slice(0, 10);
+    const seancesPassees = seancesAnnee.filter(s => s.date <= today).length || 1;
+    const seancesRestantes = Math.max(totalSeances - seancesPassees, 0);
+
+    const totalEpargne = monCalcul?.totalEpargne || 0;
+    const moyenneParSeance = seancesPassees > 0 ? totalEpargne / seancesPassees : 0;
+    const projectionFinAnnee = Math.round(moyenneParSeance * totalSeances);
+
+    return {
+      totalSeances,
+      seancesPassees,
+      seancesRestantes,
+      moyenneParSeance: Math.round(moyenneParSeance),
+      projectionFinAnnee,
+    };
+  }, [seances, config, monCalcul]);
+
+  // Donnees graphique epargne par seance
+  const graphData = useMemo(() => {
+    if (!currentUser?.membreId) return [];
+    const annee = config?.annee_courante || new Date().getFullYear();
+    const seancesAnnee = (seances || []).filter(s => s.annee === annee)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    return seancesAnnee.map(s => {
+      const total = (versements || [])
+        .filter(v => v.membre_id === currentUser.membreId && v.seance_id === s.id)
+        .reduce((acc, v) => acc + (v.montant || 0), 0);
+      let lbl = s.date;
+      try { lbl = new Date(s.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' }); } catch {}
+      return { label: lbl, value: total };
+    }).filter(d => d.value > 0);
+  }, [versements, seances, config, currentUser?.membreId]);
+
+  // ── FIN MON COMPTE ────────────────────────────────────────────────────
+
   const canSendMessage = ['superadmin', 'president'].includes(currentUser?.role);
   const nonLus = (messages || []).filter(m => {
     const lus = Array.isArray(m.lus) ? m.lus : [];
@@ -68,7 +141,7 @@ export default function DashboardScreen({ navigation }) {
 
   const handleEnvoyer = () => {
     if (!titreMsg.trim() || !contenuMsg.trim()) {
-      Alert.alert('Champs requis', 'Titre et message sont obligatoires.');
+      webSafeInfo('Champs requis', 'Titre et message sont obligatoires.');
       return;
     }
     envoyerMessage(titreMsg.trim(), contenuMsg.trim(), typeMsg);
@@ -76,7 +149,7 @@ export default function DashboardScreen({ navigation }) {
     setTitreMsg('');
     setContenuMsg('');
     setTypeMsg('info');
-    Alert.alert('Envoye', 'Votre message a ete envoye a tous les membres.');
+    webSafeInfo('Envoye', 'Votre message a ete envoye a tous les membres.');
   };
 
   const ouvrirMessage = (msg) => {
@@ -86,9 +159,21 @@ export default function DashboardScreen({ navigation }) {
 
   const formatDate = (d) => {
     if (!d) return '--';
-    try {
-      return new Date(d).toLocaleDateString('fr-FR');
-    } catch { return d; }
+    try { return new Date(d).toLocaleDateString('fr-FR'); }
+    catch { return d; }
+  };
+
+  const getSeanceDate = (seanceId) => {
+    if (!seanceId) return '--';
+    const s = (seances || []).find(sc => sc.id === seanceId);
+    return s ? formatDate(s.date) : '--';
+  };
+
+  const typeLabel = (t) => {
+    if (t === 'epargne' || !t) return 'Epargne';
+    if (t === 'caisse_projet') return 'C. Projet';
+    if (t === 'contribution') return 'Cotisation';
+    return t;
   };
 
   return (
@@ -122,6 +207,137 @@ export default function DashboardScreen({ navigation }) {
         </View>
       </View>
 
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      {/* SECTION : MON COMPTE                                              */}
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      <Text style={[s.secTitle, { marginBottom: 6 }]}>👤 Mon Compte</Text>
+
+      {/* Ma situation financiere */}
+      <Card style={{ backgroundColor: COLORS.primary }}>
+        <Text style={{ fontSize: 14, fontWeight: '700', color: '#fff', marginBottom: 8 }}>
+          💰 Ma situation - {recap?.annee || 2025}
+        </Text>
+        {[
+          ['Epargne versee', formatMontant(monCalcul?.totalEpargne || 0) + ' F'],
+          ['Interets nets', formatMontant(monCalcul?.interetNet || 0) + ' F'],
+        ].map(([k, v], i) => (
+          <View key={i} style={s.tRow}>
+            <Text style={s.tLabel}>{k}</Text>
+            <Text style={s.tVal}>{v}</Text>
+          </View>
+        ))}
+        <View style={[s.tRow, {
+          borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.2)',
+          marginTop: 6, paddingTop: 6,
+        }]}>
+          <Text style={[s.tLabel, { fontWeight: '700', color: '#fff' }]}>MON SOLDE</Text>
+          <Text style={{ fontSize: 18, fontWeight: '800', color: '#fff' }}>
+            {formatMontant(monCalcul?.solde || 0)} FCFA
+          </Text>
+        </View>
+      </Card>
+
+      {/* Engagements & Credits */}
+      {monPret ? (
+        <Card style={{ borderLeftWidth: 4, borderLeftColor: COLORS.danger, marginTop: SPACING.sm }}>
+          <Text style={{ fontSize: 13, fontWeight: '700', color: COLORS.danger, marginBottom: 6 }}>
+            💳 Mon credit en cours
+          </Text>
+          {[
+            ['Capital emprunte', formatMontant(monPret.montant || 0) + ' F'],
+            ['Interet (' + (monPret.taux || 7.5) + '%)', formatMontant(monPret.interet || 0) + ' F'],
+            ['Total a rembourser', formatMontant(monPret.montant_a_rembourser || 0) + ' F'],
+            ['Deja rembourse', formatMontant(monTotalRembourse) + ' F'],
+          ].map(([k, v], i) => (
+            <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
+              <Text style={{ fontSize: 12, color: COLORS.gray }}>{k}</Text>
+              <Text style={{ fontSize: 12, fontWeight: '600', color: COLORS.darkGray }}>{v}</Text>
+            </View>
+          ))}
+          <View style={{
+            borderTopWidth: 1, borderTopColor: COLORS.border,
+            marginTop: 6, paddingTop: 6,
+            flexDirection: 'row', justifyContent: 'space-between',
+          }}>
+            <Text style={{ fontSize: 12, fontWeight: '700', color: COLORS.danger }}>Reste a payer</Text>
+            <Text style={{ fontSize: 14, fontWeight: '800', color: COLORS.danger }}>
+              {formatMontant(Math.max((monPret.montant_a_rembourser || 0) - monTotalRembourse, 0))} F
+            </Text>
+          </View>
+        </Card>
+      ) : (
+        <Card style={{ marginTop: SPACING.sm, borderLeftWidth: 4, borderLeftColor: COLORS.secondary }}>
+          <Text style={{ fontSize: 13, color: COLORS.secondary, fontWeight: '600' }}>
+            ✅ Aucun credit en cours
+          </Text>
+        </Card>
+      )}
+
+      {/* Previsions fin d'annee */}
+      <Card style={{ marginTop: SPACING.sm }}>
+        <Text style={{ fontSize: 13, fontWeight: '700', color: COLORS.darkGray, marginBottom: 8 }}>
+          🔮 Previsions fin d'annee
+        </Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm }}>
+          <View style={s.miniKpi}>
+            <Text style={s.miniKpiV}>{formatMontant(previsions.moyenneParSeance)}</Text>
+            <Text style={s.miniKpiL}>Moy. / seance</Text>
+          </View>
+          <View style={s.miniKpi}>
+            <Text style={[s.miniKpiV, { color: COLORS.secondary }]}>
+              {formatMontant(previsions.projectionFinAnnee)}
+            </Text>
+            <Text style={s.miniKpiL}>Projection annee</Text>
+          </View>
+          <View style={s.miniKpi}>
+            <Text style={[s.miniKpiV, { color: COLORS.accent }]}>{previsions.seancesRestantes}</Text>
+            <Text style={s.miniKpiL}>Seances restantes</Text>
+          </View>
+        </View>
+      </Card>
+
+      {/* Evolution epargne par seance */}
+      {graphData.length > 0 && (
+        <Card style={{ marginTop: SPACING.sm }}>
+          <Text style={{ fontSize: 13, fontWeight: '700', color: COLORS.darkGray, marginBottom: 6 }}>
+            📈 Mes versements par seance
+          </Text>
+          <SimpleBarChart data={graphData} color={COLORS.secondary} />
+        </Card>
+      )}
+
+      {/* Historique des versements */}
+      {mesVersements.length > 0 && (
+        <>
+          <Text style={[s.secTitle, { marginTop: SPACING.md }]}>📊 Mes derniers versements</Text>
+          {mesVersements.map(d => (
+            <Card key={d.id} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: SPACING.sm }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12, color: COLORS.darkGray, fontWeight: '600' }}>
+                  {typeLabel(d.type)}
+                </Text>
+                <Text style={{ fontSize: 10, color: COLORS.gray }}>
+                  Seance {getSeanceDate(d.seance_id)} - {d.annee}
+                </Text>
+              </View>
+              <Text style={{ fontWeight: '700', color: COLORS.primary, fontSize: 14 }}>
+                +{formatMontant(d.montant || 0)} F
+              </Text>
+            </Card>
+          ))}
+        </>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      {/* SECTION : VUE GLOBALE                                             */}
+      {/* ═══════════════════════════════════════════════════════════════════ */}
+      <View style={{
+        borderTopWidth: 2, borderTopColor: COLORS.border,
+        marginTop: SPACING.lg, paddingTop: SPACING.md,
+      }}>
+        <Text style={[s.secTitle, { marginBottom: 6 }]}>🏦 Vue globale de la caisse</Text>
+      </View>
+
       {/* Carte recap financier */}
       <Card style={s.tCard}>
         <Text style={s.tName}>📊 Recap {recap?.annee || 2025}</Text>
@@ -152,7 +368,7 @@ export default function DashboardScreen({ navigation }) {
         </View>
       </Card>
 
-      {/* KPIs - responsive */}
+      {/* KPIs */}
       <View style={[s.kpiRow, isDesktop && { flexDirection: 'row' }]}>
         <Card style={[s.kpi, !isDesktop && { width: '100%' }]}>
           <Text style={s.kpiV}>{membresActifs.length}</Text>
@@ -418,6 +634,12 @@ const s = StyleSheet.create({
   kpi: { flex: 1, minWidth: 100, alignItems: 'center', paddingVertical: SPACING.md },
   kpiV: { fontSize: 18, fontWeight: '800', color: COLORS.primary },
   kpiL: { fontSize: 10, color: COLORS.gray, textAlign: 'center', marginTop: 2 },
+  miniKpi: {
+    flex: 1, minWidth: 90, backgroundColor: '#F8FAF9', borderRadius: 10,
+    padding: SPACING.sm, alignItems: 'center',
+  },
+  miniKpiV: { fontSize: 14, fontWeight: '800', color: COLORS.primary },
+  miniKpiL: { fontSize: 9, color: COLORS.gray, textAlign: 'center', marginTop: 2 },
   nextSeance: {
     backgroundColor: '#EAF4FF', borderRadius: 12, padding: SPACING.md,
     marginBottom: SPACING.md, borderLeftWidth: 4, borderLeftColor: COLORS.primary,

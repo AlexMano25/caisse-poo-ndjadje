@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  TextInput, Modal, Alert, Dimensions,
+  TextInput, Modal, Dimensions,
 } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { useApp } from '../../context/AppContext';
@@ -11,6 +11,7 @@ import CreditScoreBar from '../../components/common/CreditScoreBar';
 import { COLORS, SPACING } from '../../utils/theme';
 import { webStyle } from '../../utils/responsive';
 import { formatMontant } from '../../utils/calculations';
+import { webSafeAlert, webSafeInfo } from '../../utils/alert';
 
 const ROLE_LABEL = {
   superadmin: 'Super Admin', president: '👑 Presidente',
@@ -81,17 +82,17 @@ export default function ProfilScreen({ navigation }) {
   const sauvegarder = () => {
     mettreAJourProfil(currentUser.id, { nom, email, telephone });
     setShowEdit(false);
-    Alert.alert('Profil mis a jour');
+    webSafeInfo('Succes', 'Profil mis a jour');
   };
 
   const majMotDePasse = () => {
-    if (newPwd.length < 6) { Alert.alert('Trop court', 'Min. 6 caracteres'); return; }
-    if (newPwd !== confPwd) { Alert.alert('Erreur', 'Mots de passe differents'); return; }
+    if (newPwd.length < 6) { webSafeInfo('Trop court', 'Min. 6 caracteres'); return; }
+    if (newPwd !== confPwd) { webSafeInfo('Erreur', 'Mots de passe differents'); return; }
     changerMotDePasse(currentUser.id, newPwd);
     setShowPwd(false);
     setNewPwd('');
     setConfPwd('');
-    Alert.alert('Mot de passe mis a jour');
+    webSafeInfo('Succes', 'Mot de passe mis a jour');
   };
 
   const intEstime = montantAnn ? Math.round(parseInt(montantAnn) * 0.075) : 0;
@@ -230,10 +231,7 @@ export default function ProfilScreen({ navigation }) {
       <TouchableOpacity
         style={st.btnLogout}
         onPress={() =>
-          Alert.alert('Deconnexion', 'Confirmer ?', [
-            { text: 'Annuler', style: 'cancel' },
-            { text: 'Oui', onPress: logout },
-          ])
+          webSafeAlert('Deconnexion', 'Voulez-vous vous deconnecter ?', () => logout())
         }
       >
         <Text style={st.btnLogoutT}>Se deconnecter</Text>
@@ -324,7 +322,7 @@ export default function ProfilScreen({ navigation }) {
             <TouchableOpacity
               style={st.btnPri}
               onPress={() => {
-                Alert.alert('Annonce enregistree', 'Votre demande a ete transmise au bureau.');
+                webSafeInfo('Annonce enregistree', 'Votre demande a ete transmise au bureau.');
                 setShowAnnonce(false);
                 setMontantAnn('');
               }}
