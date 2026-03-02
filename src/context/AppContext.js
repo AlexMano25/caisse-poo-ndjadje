@@ -40,6 +40,7 @@ export const AppProvider = ({ children }) => {
   const [messages, setMessages]           = useState([]);
   const [rapports, setRapports]           = useState([]);
   const [sanctions, setSanctions]         = useState([]);
+  const [fonds, setFonds]                 = useState([]);
   const [isLoading, setIsLoading]         = useState(true);
 
   // ── Derived: recap (memoised, recomputed when deps change) ──────────────
@@ -82,6 +83,7 @@ export const AppProvider = ({ children }) => {
         messagesData,
         rapportsData,
         sanctionsData,
+        fondsData,
       ] = await Promise.all([
         query('djangui_config'),
         query('djangui_membres', { order: { column: 'nom', ascending: true } }),
@@ -92,6 +94,7 @@ export const AppProvider = ({ children }) => {
         query('djangui_messages', { order: { column: 'created_at', ascending: false } }),
         query('djangui_rapports', { order: { column: 'created_at', ascending: false } }),
         query('djangui_sanctions', { order: { column: 'created_at', ascending: false } }),
+        query('djangui_fonds', { order: { column: 'date', ascending: false } }),
       ]);
 
       // Config is a single-row table; take the first row
@@ -104,6 +107,7 @@ export const AppProvider = ({ children }) => {
       setMessages(messagesData);
       setRapports(rapportsData);
       setSanctions(sanctionsData);
+      setFonds(fondsData);
     } catch (err) {
       console.error('[AppContext] fetchAll error:', err);
       Alert.alert('Erreur de chargement', err.message || 'Impossible de charger les donnees.');
@@ -374,6 +378,24 @@ export const AppProvider = ({ children }) => {
     }
   }, [refreshAll]);
 
+  // ── ajouterFonds (credit ou debit sur un compte special) ────────────────
+  const ajouterFonds = useCallback(async (type, operation, montant, description, seanceId) => {
+    try {
+      const { error } = await supabase.from('djangui_fonds').insert({
+        type,
+        operation,
+        montant,
+        description: description || null,
+        seance_id: seanceId || null,
+        date: new Date().toISOString(),
+      });
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] ajouterFonds error:', err);
+    }
+  }, [refreshAll]);
+
   // ── Context value (memoised to prevent unnecessary re-renders) ──────────
   const value = useMemo(() => ({
     // State
@@ -386,6 +408,7 @@ export const AppProvider = ({ children }) => {
     messages,
     rapports,
     sanctions,
+    fonds,
     recap,
     isLoading,
 
@@ -404,13 +427,14 @@ export const AppProvider = ({ children }) => {
     ajouterSeance,
     creerMembre,
     modifierMembre,
+    ajouterFonds,
   }), [
     config, membres, seances, versements, prets, remboursements,
-    messages, rapports, sanctions, recap, isLoading,
+    messages, rapports, sanctions, fonds, recap, isLoading,
     refreshAll, updateConfig, ajouterVersement, modifierVersement,
     supprimerVersement, accorderPret, rembourserPret, envoyerMessage,
     marquerLu, publierRapport, appliquerSanction, ajouterSeance,
-    creerMembre, modifierMembre,
+    creerMembre, modifierMembre, ajouterFonds,
   ]);
 
   return (

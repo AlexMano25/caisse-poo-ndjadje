@@ -10,15 +10,18 @@ const PERMISSIONS = {
     creerMembre: true, supprimerMembre: true, modifierMembre: true, configurerTaux: true,
     publierCharte: true, publierRapport: true, voirTout: true, elireBureau: true,
     modifierMontants: true, saisirVersements: true, accordePret: true,
-    genererRapport: true, ordreJour: true, calendrierPot: true,
+    genererRapport: true, ordreJour: true, calendrierPot: true, gererFonds: true,
   },
   president: {
     publierCharte: true, publierRapport: true, voirTout: true, elireBureau: true,
     saisirVersements: true, accordePret: true, genererRapport: true,
-    ordreJour: true, calendrierPot: true,
+    ordreJour: true, calendrierPot: true, gererFonds: true,
   },
   tresorier: {
-    voirTout: true, modifierMontants: true, saisirVersements: true, accordePret: true,
+    voirTout: true, modifierMontants: true, saisirVersements: true, accordePret: true, gererFonds: true,
+  },
+  caissier: {
+    voirTout: true, saisirVersements: true, gererFonds: true,
   },
   secretaire: {
     publierRapport: true, voirTout: true, genererRapport: true, calendrierPot: true,

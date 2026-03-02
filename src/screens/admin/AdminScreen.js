@@ -16,11 +16,13 @@ import { formatMontant } from '../../utils/calculations';
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 const RL = {
   president: '\u{1F451} Presidente', tresorier: '\u{1F4BC} Tresorier',
-  secretaire: '\u{1F4DD} Secretaire', membre: '\u{1F464} Membre', superadmin: 'Admin',
+  secretaire: '\u{1F4DD} Secretaire', caissier: '\u{1F4B0} Caissier',
+  membre: '\u{1F464} Membre', superadmin: 'Admin',
 };
 
 const MAIN_TABS = [
   { key: 'wizard', label: '\u{1F9D9} Assistant' },
+  { key: 'comptes', label: '\u{1F4B0} Comptes' },
   { key: 'config', label: '\u2699\uFE0F Taux' },
   { key: 'membres', label: '\u{1F465} Membres' },
 ];
@@ -37,7 +39,7 @@ const STEPS = [
 const COTISATION_BASE_DEFAUT = 150000;
 const CAISSE_PROJET_DEFAUT = 10000;
 
-const ROLES_LIST = ['membre', 'president', 'tresorier', 'secretaire'];
+const ROLES_LIST = ['membre', 'president', 'tresorier', 'secretaire', 'caissier'];
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    WEB-SAFE CONFIRM (Alert.alert doesn't work on web with button callbacks)
@@ -68,10 +70,10 @@ const webAlert = (title, message) => {
 export default function AdminScreen() {
   const { users, creerUtilisateur, adminResetPassword, mettreAJourProfil, fetchAllUsers } = useAuth();
   const {
-    config, membres, seances, versements, prets, remboursements, sanctions, recap,
+    config, membres, seances, versements, prets, remboursements, sanctions, fonds, recap,
     updateConfig, ajouterVersement, accorderPret, rembourserPret,
     ajouterSeance, appliquerSanction, publierRapport, refreshAll,
-    modifierMembre,
+    modifierMembre, ajouterFonds,
   } = useApp();
 
   const [tab, setTab] = useState('wizard');
@@ -137,6 +139,48 @@ export default function AdminScreen() {
   const [editTel, setEditTel] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editRole, setEditRole] = useState('membre');
+
+  /* ═══════════ COMPTES / FONDS STATE ═══════════ */
+  const [debitType, setDebitType] = useState('retenue_1_5');
+  const [debitMontant, setDebitMontant] = useState('');
+  const [debitDesc, setDebitDesc] = useState('');
+  const [showDebitModal, setShowDebitModal] = useState(false);
+
+  // Computed fund balances
+  const fondsSoldes = useMemo(() => {
+    const retCredits = (fonds || []).filter(f => f.type === 'retenue_1_5' && f.operation === 'credit')
+      .reduce((s, f) => s + (Number(f.montant) || 0), 0);
+    const retDebits = (fonds || []).filter(f => f.type === 'retenue_1_5' && f.operation === 'debit')
+      .reduce((s, f) => s + (Number(f.montant) || 0), 0);
+    const cpCredits = (fonds || []).filter(f => f.type === 'caisse_projet' && f.operation === 'credit')
+      .reduce((s, f) => s + (Number(f.montant) || 0), 0);
+    const cpDebits = (fonds || []).filter(f => f.type === 'caisse_projet' && f.operation === 'debit')
+      .reduce((s, f) => s + (Number(f.montant) || 0), 0);
+    return {
+      retenueSolde: retCredits - retDebits,
+      retenueCredits: retCredits,
+      retenueDebits: retDebits,
+      caisseProjetSolde: cpCredits - cpDebits,
+      caisseProjetCredits: cpCredits,
+      caisseProjetDebits: cpDebits,
+    };
+  }, [fonds]);
+
+  const handleDebit = async () => {
+    const mt = parseInt(debitMontant) || 0;
+    if (mt <= 0) { webAlert('Erreur', 'Montant invalide.'); return; }
+    if (!debitDesc.trim()) { webAlert('Erreur', 'Description requise pour un debit.'); return; }
+    const solde = debitType === 'retenue_1_5' ? fondsSoldes.retenueSolde : fondsSoldes.caisseProjetSolde;
+    if (mt > solde) {
+      webAlert('Erreur', `Le montant (${formatMontant(mt)}) depasse le solde disponible (${formatMontant(solde)}).`);
+      return;
+    }
+    await ajouterFonds(debitType, 'debit', mt, debitDesc.trim(), null);
+    setDebitMontant('');
+    setDebitDesc('');
+    setShowDebitModal(false);
+    webAlert('Debit enregistre', `${formatMontant(mt)} FCFA debites du compte ${debitType === 'retenue_1_5' ? 'Retenues 1.5%' : 'Caisse Projet'}.`);
+  };
 
   /* ═══════════ DERIVED DATA ═══════════ */
   const activeMembres = useMemo(() => {
@@ -1351,6 +1395,121 @@ export default function AdminScreen() {
           </>
         )}
 
+        {/* ═══════════════════ COMPTES TAB ═══════════════════ */}
+        {tab === 'comptes' && (
+          <>
+            <Text style={st.pageTitle}>{'\u{1F4B0}'} Comptes Speciaux</Text>
+            <Text style={st.pageSub}>Suivi cumulatif des retenues et de la caisse projet</Text>
+
+            {/* ── Compte Retenues 1.5% ── */}
+            <Card style={{ backgroundColor: '#1B5E20', marginBottom: SPACING.md }}>
+              <Text style={{ color: '#A5D6A7', fontSize: 11, fontWeight: '600' }}>COMPTE RETENUES 1.5%</Text>
+              <Text style={{ color: '#fff', fontSize: 28, fontWeight: '900', marginVertical: 4 }}>
+                {formatMontant(fondsSoldes.retenueSolde)} FCFA
+              </Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+                <View>
+                  <Text style={{ color: '#A5D6A7', fontSize: 10 }}>Total credite</Text>
+                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>+{formatMontant(fondsSoldes.retenueCredits)} F</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={{ color: '#EF9A9A', fontSize: 10 }}>Total debite</Text>
+                  <Text style={{ color: '#EF9A9A', fontSize: 13, fontWeight: '700' }}>-{formatMontant(fondsSoldes.retenueDebits)} F</Text>
+                </View>
+              </View>
+              <Text style={{ color: '#A5D6A7', fontSize: 10, marginTop: 6 }}>
+                Prelevement automatique de 1.5% sur le total epargne a chaque cloture de seance.
+              </Text>
+            </Card>
+
+            {/* ── Compte Caisse Projet ── */}
+            <Card style={{ backgroundColor: '#4A148C', marginBottom: SPACING.md }}>
+              <Text style={{ color: '#CE93D8', fontSize: 11, fontWeight: '600' }}>CAISSE PROJET (10 000 F / membre / seance)</Text>
+              <Text style={{ color: '#fff', fontSize: 28, fontWeight: '900', marginVertical: 4 }}>
+                {formatMontant(fondsSoldes.caisseProjetSolde)} FCFA
+              </Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+                <View>
+                  <Text style={{ color: '#CE93D8', fontSize: 10 }}>Total credite</Text>
+                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>+{formatMontant(fondsSoldes.caisseProjetCredits)} F</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={{ color: '#EF9A9A', fontSize: 10 }}>Total debite</Text>
+                  <Text style={{ color: '#EF9A9A', fontSize: 13, fontWeight: '700' }}>-{formatMontant(fondsSoldes.caisseProjetDebits)} F</Text>
+                </View>
+              </View>
+              <Text style={{ color: '#CE93D8', fontSize: 10, marginTop: 6 }}>
+                Objectif annuel : {formatMontant(filteredMembres.length * 40000)} F ({filteredMembres.length} mbr x 40 000 F/an)
+              </Text>
+            </Card>
+
+            {/* ── Bouton déclarer un débit ── */}
+            <TouchableOpacity
+              style={[st.btnDanger, { marginBottom: SPACING.md }]}
+              onPress={() => setShowDebitModal(true)}
+            >
+              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
+                {'\u{1F4E4}'} Declarer un decaissement
+              </Text>
+            </TouchableOpacity>
+
+            {/* ── Historique des mouvements ── */}
+            <Text style={st.sectionTitle}>Historique des mouvements</Text>
+            {(fonds || []).length === 0 ? (
+              <Card>
+                <Text style={{ fontSize: 13, color: COLORS.gray, textAlign: 'center' }}>
+                  Aucun mouvement enregistre. Les retenues 1.5% et la caisse projet seront creditees automatiquement a chaque cloture de seance.
+                </Text>
+              </Card>
+            ) : (
+              (fonds || []).slice(0, 30).map((f, i) => (
+                <Card key={f.id || i} style={{ paddingVertical: 8, marginBottom: 4 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <View style={{
+                          backgroundColor: f.type === 'retenue_1_5' ? '#E8F5E9' : '#EDE7F6',
+                          borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2,
+                        }}>
+                          <Text style={{
+                            fontSize: 9, fontWeight: '700',
+                            color: f.type === 'retenue_1_5' ? '#1B5E20' : '#4A148C',
+                          }}>
+                            {f.type === 'retenue_1_5' ? 'RET 1.5%' : 'C.PROJET'}
+                          </Text>
+                        </View>
+                        <View style={{
+                          backgroundColor: f.operation === 'credit' ? '#E8F5E9' : '#FFEBEE',
+                          borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2,
+                        }}>
+                          <Text style={{
+                            fontSize: 9, fontWeight: '700',
+                            color: f.operation === 'credit' ? '#2E7D32' : COLORS.danger,
+                          }}>
+                            {f.operation === 'credit' ? 'CREDIT' : 'DEBIT'}
+                          </Text>
+                        </View>
+                      </View>
+                      {f.description ? (
+                        <Text style={{ fontSize: 11, color: COLORS.gray, marginTop: 2 }}>{f.description}</Text>
+                      ) : null}
+                      <Text style={{ fontSize: 9, color: COLORS.gray, marginTop: 1 }}>
+                        {new Date(f.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}
+                      </Text>
+                    </View>
+                    <Text style={{
+                      fontSize: 14, fontWeight: '800',
+                      color: f.operation === 'credit' ? COLORS.primary : COLORS.danger,
+                    }}>
+                      {f.operation === 'credit' ? '+' : '-'}{formatMontant(f.montant)} F
+                    </Text>
+                  </View>
+                </Card>
+              ))
+            )}
+          </>
+        )}
+
         {/* ═══════════════════ CONFIG TAB ═══════════════════ */}
         {tab === 'config' && (
           <>
@@ -1540,6 +1699,64 @@ export default function AdminScreen() {
               <Text style={{ color: '#fff', fontWeight: '700' }}>Creer le compte</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowNewMember(false)}>
+              <Text style={{ textAlign: 'center', marginTop: 14, color: COLORS.gray }}>Annuler</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ═══════════ MODAL DEBIT FONDS ═══════════ */}
+      <Modal visible={showDebitModal} transparent animationType="slide">
+        <View style={st.overlay}>
+          <View style={[st.modalSheet, isDesktop && { maxWidth: 440, alignSelf: 'center', width: '100%' }]}>
+            <Text style={{ fontSize: 18, fontWeight: '700', color: COLORS.danger, marginBottom: SPACING.md }}>
+              {'\u{1F4E4}'} Declarer un decaissement
+            </Text>
+
+            <Text style={st.fieldLabel}>Compte a debiter</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.md }}>
+              <TouchableOpacity
+                style={[st.chip, debitType === 'retenue_1_5' && { backgroundColor: '#1B5E20', borderColor: '#1B5E20' }]}
+                onPress={() => setDebitType('retenue_1_5')}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '600', color: debitType === 'retenue_1_5' ? '#fff' : COLORS.darkGray }}>
+                  Retenues 1.5% ({formatMontant(fondsSoldes.retenueSolde)} F)
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[st.chip, debitType === 'caisse_projet' && { backgroundColor: '#4A148C', borderColor: '#4A148C' }]}
+                onPress={() => setDebitType('caisse_projet')}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '600', color: debitType === 'caisse_projet' ? '#fff' : COLORS.darkGray }}>
+                  Caisse Projet ({formatMontant(fondsSoldes.caisseProjetSolde)} F)
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={st.fieldLabel}>Montant (FCFA)</Text>
+            <TextInput
+              style={st.input}
+              keyboardType="numeric"
+              value={debitMontant}
+              onChangeText={setDebitMontant}
+              placeholder="ex: 100000"
+            />
+
+            <Text style={st.fieldLabel}>Motif / Description *</Text>
+            <TextInput
+              style={[st.input, { height: 70, textAlignVertical: 'top' }]}
+              multiline
+              numberOfLines={3}
+              value={debitDesc}
+              onChangeText={setDebitDesc}
+              placeholder="Ex: Achat materiel pour projet village..."
+              placeholderTextColor={COLORS.gray}
+            />
+
+            <TouchableOpacity style={st.btnDanger} onPress={handleDebit}>
+              <Text style={{ color: '#fff', fontWeight: '700' }}>Confirmer le decaissement</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowDebitModal(false)}>
               <Text style={{ textAlign: 'center', marginTop: 14, color: COLORS.gray }}>Annuler</Text>
             </TouchableOpacity>
           </View>
