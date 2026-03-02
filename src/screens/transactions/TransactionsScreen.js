@@ -1,139 +1,286 @@
-import React,{useState} from 'react';
-import { View,Text,ScrollView,StyleSheet,TouchableOpacity,Modal,TextInput,Alert } from 'react-native';
+import React, { useState, useMemo } from 'react';
+import {
+  View, Text, ScrollView, StyleSheet, TouchableOpacity,
+  TextInput, Dimensions,
+} from 'react-native';
 import { useApp } from '../../context/AppContext';
+import { useAuth } from '../../context/AuthContext';
 import Card from '../../components/common/Card';
 import StatusBadge from '../../components/common/StatusBadge';
-import { COLORS, FONTS, SPACING } from '../../utils/theme';
-const TI = { cotisation:'💳', cotisation_cash:'💵', sequestre:'🔒', penalite:'⚠️' };
-const TL = { cotisation:'Cotisation (digital)', cotisation_cash:'Cotisation Cash', sequestre:'Séquestre', penalite:'Pénalité' };
+import { COLORS, SPACING } from '../../utils/theme';
+import { webStyle } from '../../utils/responsive';
+import { formatMontant } from '../../utils/calculations';
+
+const TYPE_ICON = {
+  epargne: '💰', sanction: '⚠️', pret: '💳', remboursement: '✅',
+};
+const TYPE_LABEL = {
+  epargne: 'Epargne', sanction: 'Sanction', pret: 'Pret', remboursement: 'Remboursement',
+};
+
+const formatDate = (d) => {
+  if (!d) return '--';
+  try {
+    return new Date(d).toLocaleDateString('fr-FR');
+  } catch {
+    return '--';
+  }
+};
+
 export default function TransactionsScreen() {
-  const { transactions,validateCashPayment,declareCashPayment,addSequestreDeposit,releaseSequestre,sequestre,currentUser,tontine } = useApp();
-  const [tab,setTab]=useState('all');
-  const [showCash,setShowCash]=useState(false);
-  const [showSeq,setShowSeq]=useState(false);
-  const [cashNote,setCashNote]=useState('');
-  const [seqAmt,setSeqAmt]=useState('');
-  const isBureau=['president','tresorier','secretaire'].includes(currentUser.role);
-  const filtered=transactions.filter(t=>tab==='pending'?t.status==='pending':tab==='sequestre'?t.type==='sequestre':true);
-  const seqPct=Math.min((sequestre.accumulated/sequestre.target)*100,100);
-  const handleValidate=(txn)=>{
-    if(!isBureau){Alert.alert('Accès refusé','Seul le bureau peut valider.');return;}
-    if(txn.validatedBy.includes(currentUser.id)){Alert.alert('Déjà validé','Vous avez déjà validé cette transaction.');return;}
-    validateCashPayment(txn.id,currentUser.id);
-    Alert.alert('✅ Validé',txn.validatedBy.length+1>=2?'Transaction inscrite au journal.':'1 validation supplémentaire requise.');
+  const { currentUser } = useAuth();
+  const { versements, prets, remboursements, sanctions, membres, seances } = useApp();
+
+  const [filterMembre, setFilterMembre] = useState('');
+  const [filterType, setFilterType] = useState('all');
+
+  const width = Dimensions.get('window').width;
+  const isDesktop = width >= 768;
+
+  const getMembreName = (membreId) =>
+    (membres || []).find(m => m.id === membreId)?.nom || '--';
+
+  const getSeanceDate = (seanceId) => {
+    const seance = (seances || []).find(s => s.id === seanceId);
+    return seance ? seance.date : null;
   };
-  const handleCash=()=>{
-    if(!cashNote.trim()){Alert.alert('Erreur','Ajoutez une note.');return;}
-    declareCashPayment(tontine.cotisationAmount,cashNote);
-    setCashNote('');setShowCash(false);
-    Alert.alert('✅ Déclaré','En attente de validation par 2 membres du bureau.');
-  };
-  const handleSeq=()=>{
-    const amt=parseInt(seqAmt,10);
-    if(!amt||amt<=0){Alert.alert('Erreur','Montant invalide.');return;}
-    addSequestreDeposit(amt,'orange_money');
-    setSeqAmt('');setShowSeq(false);
-    Alert.alert('✅ Versé',amt.toLocaleString()+' FCFA ajoutés à votre séquestre.');
-  };
+
+  // Combine all transactions
+  const allTransactions = useMemo(() => {
+    const txns = [];
+
+    // Versements -> epargne
+    (versements || []).forEach(v => {
+      txns.push({
+        id: `v-${v.id}`,
+        type: 'epargne',
+        nom: getMembreName(v.membre_id),
+        membreId: v.membre_id,
+        montant: v.montant || 0,
+        date: v.date || getSeanceDate(v.seance_id) || null,
+        annee: v.annee || null,
+        motif: null,
+      });
+    });
+
+    // Prets
+    (prets || []).forEach(p => {
+      txns.push({
+        id: `p-${p.id}`,
+        type: 'pret',
+        nom: getMembreName(p.membre_id),
+        membreId: p.membre_id,
+        montant: -(p.montant || 0),
+        date: p.date_octroi || null,
+        annee: null,
+        detail: `Int: ${formatMontant(p.interet)} - Total: ${formatMontant(p.montant_a_rembourser)} F`,
+        statut: p.statut,
+      });
+    });
+
+    // Remboursements
+    (remboursements || []).forEach(r => {
+      // Look up the pret to find the membre_id
+      const pret = (prets || []).find(p => p.id === r.pret_id);
+      const membreId = pret ? pret.membre_id : null;
+      txns.push({
+        id: `r-${r.id}`,
+        type: 'remboursement',
+        nom: membreId ? getMembreName(membreId) : '--',
+        membreId: membreId,
+        montant: r.montant || 0,
+        date: r.date || r.created_at || null,
+        annee: null,
+      });
+    });
+
+    // Sanctions
+    (sanctions || []).forEach(sa => {
+      txns.push({
+        id: `s-${sa.id}`,
+        type: 'sanction',
+        nom: getMembreName(sa.membre_id),
+        membreId: sa.membre_id,
+        montant: -(sa.montant || 0),
+        date: sa.created_at || null,
+        annee: null,
+        motif: sa.motif || null,
+      });
+    });
+
+    // Sort by date descending
+    txns.sort((a, b) => {
+      const da = a.date ? new Date(a.date).getTime() : 0;
+      const db = b.date ? new Date(b.date).getTime() : 0;
+      return db - da;
+    });
+
+    return txns;
+  }, [versements, prets, remboursements, sanctions, membres, seances]);
+
+  // Filter
+  const filtered = useMemo(() => {
+    let result = allTransactions;
+    if (filterType !== 'all') {
+      result = result.filter(t => t.type === filterType);
+    }
+    if (filterMembre.trim()) {
+      const q = filterMembre.toLowerCase();
+      result = result.filter(t => (t.nom || '').toLowerCase().includes(q));
+    }
+    return result;
+  }, [allTransactions, filterType, filterMembre]);
+
+  // Summaries
+  const totalEpargne = filtered
+    .filter(t => t.type === 'epargne' && t.montant > 0)
+    .reduce((s, t) => s + t.montant, 0);
+  const totalSanctions = filtered
+    .filter(t => t.type === 'sanction')
+    .reduce((s, t) => s + Math.abs(t.montant), 0);
+  const totalPrets = filtered
+    .filter(t => t.type === 'pret')
+    .reduce((s, t) => s + Math.abs(t.montant), 0);
+  const totalRemb = filtered
+    .filter(t => t.type === 'remboursement')
+    .reduce((s, t) => s + t.montant, 0);
+
   return (
-    <View style={{flex:1,backgroundColor:COLORS.bg}}>
-      <View style={s.tabs}>
-        {[['all','Toutes'],['pending','En attente'],['sequestre','Séquestre']].map(([k,l])=>(
-          <TouchableOpacity key={k} style={[s.tab,tab===k&&s.tabA]} onPress={()=>setTab(k)}>
-            <Text style={[s.tabT,tab===k&&s.tabTA]}>{l}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      {tab==='sequestre'&&(
-        <Card style={{margin:SPACING.md,backgroundColor:'#EAF4FF'}}>
-          <Text style={{fontSize:18,fontWeight:'700',color:COLORS.darkGray}}>🔒 Mon Séquestre</Text>
-          <Text style={{fontSize:13,color:COLORS.gray,marginBottom:SPACING.sm}}>Objectif : {sequestre.target.toLocaleString()} FCFA</Text>
-          <View style={{height:10,backgroundColor:COLORS.border,borderRadius:5,overflow:'hidden',marginBottom:6}}>
-            <View style={{height:'100%',width:`${seqPct}%`,backgroundColor:COLORS.primary,borderRadius:5}}/>
-          </View>
-          <Text style={{fontSize:13,color:COLORS.primary,fontWeight:'700',marginBottom:SPACING.sm}}>
-            {sequestre.accumulated.toLocaleString()} / {sequestre.target.toLocaleString()} FCFA ({Math.round(seqPct)}%)
-          </Text>
-          <View style={{flexDirection:'row',gap:SPACING.sm}}>
-            <TouchableOpacity style={s.btnSec} onPress={()=>setShowSeq(true)}><Text style={{color:COLORS.primary,fontWeight:'700'}}>+ Verser</Text></TouchableOpacity>
-            {sequestre.accumulated>=sequestre.target&&(
-              <TouchableOpacity style={s.btnPri} onPress={()=>{releaseSequestre();Alert.alert('🎉 Libéré','Séquestre transformé en cotisation!');}}>
-                <Text style={{color:'#fff',fontWeight:'700'}}>Libérer → Cotisation</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </Card>
-      )}
-      <ScrollView contentContainerStyle={{paddingBottom:100,paddingHorizontal:SPACING.md}}>
-        {filtered.map(txn=>(
-          <Card key={txn.id}>
-            <View style={{flexDirection:'row',alignItems:'flex-start',gap:SPACING.sm}}>
-              <Text style={{fontSize:24}}>{TI[txn.type]||'💰'}</Text>
-              <View style={{flex:1}}>
-                <Text style={{fontSize:15,fontWeight:'600',color:COLORS.darkGray}}>{txn.memberName}</Text>
-                <Text style={{fontSize:11,color:COLORS.gray}}>{TL[txn.type]} · {txn.date}</Text>
-                {txn.note?<Text style={{fontSize:11,color:COLORS.secondary,fontStyle:'italic',marginTop:2}}>{txn.note}</Text>:null}
-              </View>
-              <View style={{alignItems:'flex-end',gap:4}}>
-                <Text style={{fontSize:15,fontWeight:'700',color:txn.type==='penalite'?'#E63946':'#52B788'}}>
-                  {txn.type==='penalite'?'-':'+'}{txn.amount.toLocaleString()} F
-                </Text>
-                <StatusBadge status={txn.status}/>
-              </View>
-            </View>
-            {txn.status==='pending'&&txn.type==='cotisation_cash'&&isBureau&&(
-              <View style={s.valBox}>
-                <Text style={{fontSize:11,color:'#856404'}}>{txn.validatedBy.length}/2 validation(s)</Text>
-                <TouchableOpacity style={s.btnVal} onPress={()=>handleValidate(txn)}>
-                  <Text style={{color:'#fff',fontSize:11,fontWeight:'700'}}>✔ Valider</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
+      <ScrollView contentContainerStyle={[{ padding: SPACING.md, paddingBottom: 40 }, webStyle()]}>
+        <Text style={st.titre}>Transactions financieres</Text>
+        <Text style={{ fontSize: 12, color: COLORS.gray, marginBottom: SPACING.md }}>
+          Vue combinee de tous les mouvements
+        </Text>
+
+        {/* Summaries */}
+        <View style={[st.summaryRow, isDesktop && { flexDirection: 'row' }]}>
+          <Card style={[st.summaryCard, { borderLeftColor: COLORS.primary }]}>
+            <Text style={st.summaryLabel}>Epargne</Text>
+            <Text style={[st.summaryVal, { color: COLORS.primary }]}>
+              +{formatMontant(totalEpargne)} F
+            </Text>
           </Card>
-        ))}
+          <Card style={[st.summaryCard, { borderLeftColor: COLORS.danger }]}>
+            <Text style={st.summaryLabel}>Sanctions</Text>
+            <Text style={[st.summaryVal, { color: COLORS.danger }]}>
+              -{formatMontant(totalSanctions)} F
+            </Text>
+          </Card>
+          <Card style={[st.summaryCard, { borderLeftColor: COLORS.accent }]}>
+            <Text style={st.summaryLabel}>Prets</Text>
+            <Text style={[st.summaryVal, { color: COLORS.accent }]}>
+              {formatMontant(totalPrets)} F
+            </Text>
+          </Card>
+          <Card style={[st.summaryCard, { borderLeftColor: COLORS.success }]}>
+            <Text style={st.summaryLabel}>Remboursements</Text>
+            <Text style={[st.summaryVal, { color: COLORS.success }]}>
+              +{formatMontant(totalRemb)} F
+            </Text>
+          </Card>
+        </View>
+
+        {/* Filters */}
+        <View style={st.filterContainer}>
+          <TextInput
+            style={st.searchInput}
+            placeholder="Filtrer par nom..."
+            value={filterMembre}
+            onChangeText={setFilterMembre}
+            placeholderTextColor={COLORS.gray}
+          />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: SPACING.sm }}>
+            {[
+              ['all', 'Toutes'],
+              ['epargne', '💰 Epargne'],
+              ['sanction', '⚠️ Sanctions'],
+              ['pret', '💳 Prets'],
+              ['remboursement', '✅ Remb.'],
+            ].map(([key, label]) => (
+              <TouchableOpacity
+                key={key}
+                style={[st.filterBtn, filterType === key && st.filterBtnActive]}
+                onPress={() => setFilterType(key)}
+              >
+                <Text style={[st.filterBtnT, filterType === key && { color: '#fff' }]}>
+                  {label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+
+        {/* Transaction list */}
+        <Text style={{ fontSize: 13, color: COLORS.gray, marginBottom: SPACING.sm }}>
+          {filtered.length} transaction(s)
+        </Text>
+        {filtered.length === 0 ? (
+          <Card>
+            <Text style={{ textAlign: 'center', color: COLORS.gray }}>
+              Aucune transaction trouvee.
+            </Text>
+          </Card>
+        ) : (
+          filtered.map(txn => (
+            <Card key={txn.id}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.sm }}>
+                <Text style={{ fontSize: 24 }}>{TYPE_ICON[txn.type] || '💰'}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '600', color: COLORS.darkGray }}>
+                    {txn.nom}
+                  </Text>
+                  <Text style={{ fontSize: 11, color: COLORS.gray }}>
+                    {TYPE_LABEL[txn.type] || txn.type} - {formatDate(txn.date)}
+                    {txn.annee ? ` - ${txn.annee}` : ''}
+                  </Text>
+                  {txn.motif && (
+                    <Text style={{ fontSize: 11, color: COLORS.danger, fontStyle: 'italic', marginTop: 2 }}>
+                      {txn.motif}
+                    </Text>
+                  )}
+                  {txn.detail && (
+                    <Text style={{ fontSize: 11, color: COLORS.secondary, marginTop: 2 }}>
+                      {txn.detail}
+                    </Text>
+                  )}
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                  <Text style={{
+                    fontSize: 15, fontWeight: '700',
+                    color: txn.montant >= 0 ? COLORS.success : COLORS.danger,
+                  }}>
+                    {txn.montant >= 0 ? '+' : ''}{formatMontant(txn.montant)} F
+                  </Text>
+                  {txn.statut && <StatusBadge status={txn.statut} />}
+                </View>
+              </View>
+            </Card>
+          ))
+        )}
       </ScrollView>
-      <TouchableOpacity style={s.fab} onPress={()=>setShowCash(true)}>
-        <Text style={{color:'#fff',fontWeight:'700',fontSize:15}}>💵 Déclarer un paiement Cash</Text>
-      </TouchableOpacity>
-      <Modal visible={showCash} transparent animationType="slide">
-        <View style={s.overlay}>
-          <View style={s.modal}>
-            <Text style={s.mTitle}>💵 Déclarer un paiement cash</Text>
-            <Text style={{fontSize:13,color:COLORS.secondary,marginBottom:SPACING.md}}>Montant : {tontine.cotisationAmount.toLocaleString()} {tontine.currency}</Text>
-            <TextInput style={s.input} placeholder="Note (ex: remis au trésorier le 26/02)" value={cashNote} onChangeText={setCashNote}/>
-            <TouchableOpacity style={s.btnPri} onPress={handleCash}><Text style={{color:'#fff',fontWeight:'700'}}>Envoyer la déclaration</Text></TouchableOpacity>
-            <TouchableOpacity onPress={()=>setShowCash(false)}><Text style={s.cancel}>Annuler</Text></TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-      <Modal visible={showSeq} transparent animationType="slide">
-        <View style={s.overlay}>
-          <View style={s.modal}>
-            <Text style={s.mTitle}>🔒 Verser dans le séquestre</Text>
-            <TextInput style={s.input} placeholder="Montant en FCFA" keyboardType="numeric" value={seqAmt} onChangeText={setSeqAmt}/>
-            <TouchableOpacity style={s.btnPri} onPress={handleSeq}><Text style={{color:'#fff',fontWeight:'700'}}>Verser via Mobile Money</Text></TouchableOpacity>
-            <TouchableOpacity onPress={()=>setShowSeq(false)}><Text style={s.cancel}>Annuler</Text></TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
-const s=StyleSheet.create({
-  tabs:{flexDirection:'row',backgroundColor:'#fff',borderBottomWidth:1,borderColor:'#DEE2E6'},
-  tab:{flex:1,paddingVertical:12,alignItems:'center'},
-  tabA:{borderBottomWidth:2,borderColor:'#1B4332'},
-  tabT:{fontSize:13,color:'#6C757D'},
-  tabTA:{color:'#1B4332',fontWeight:'700'},
-  valBox:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',
-    marginTop:8,backgroundColor:'#FFF3CD',borderRadius:8,padding:8},
-  btnVal:{backgroundColor:'#52B788',paddingHorizontal:14,paddingVertical:6,borderRadius:6},
-  fab:{position:'absolute',bottom:16,left:16,right:16,backgroundColor:'#F4A261',borderRadius:12,padding:16,alignItems:'center'},
-  btnPri:{backgroundColor:'#1B4332',borderRadius:8,padding:8,alignItems:'center',flex:1},
-  btnSec:{borderWidth:1.5,borderColor:'#1B4332',borderRadius:8,padding:8,alignItems:'center',flex:1},
-  overlay:{flex:1,backgroundColor:'rgba(0,0,0,0.5)',justifyContent:'flex-end'},
-  modal:{backgroundColor:'#fff',borderTopLeftRadius:20,borderTopRightRadius:20,padding:32},
-  mTitle:{fontSize:18,fontWeight:'700',marginBottom:4},
-  input:{borderWidth:1,borderColor:'#DEE2E6',borderRadius:8,padding:16,marginBottom:16,fontSize:15},
-  cancel:{textAlign:'center',marginTop:16,color:'#6C757D'},
+
+const st = StyleSheet.create({
+  titre: { fontSize: 18, fontWeight: '700', color: COLORS.darkGray },
+  summaryRow: { flexWrap: 'wrap', gap: SPACING.sm, marginBottom: SPACING.sm },
+  summaryCard: {
+    flex: 1, minWidth: 140, borderLeftWidth: 4,
+    paddingVertical: SPACING.sm,
+  },
+  summaryLabel: { fontSize: 11, color: COLORS.gray },
+  summaryVal: { fontSize: 15, fontWeight: '800', marginTop: 2 },
+  filterContainer: { marginBottom: SPACING.sm },
+  searchInput: {
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: 10,
+    padding: 12, fontSize: 14, marginBottom: SPACING.sm, backgroundColor: '#fff',
+  },
+  filterBtn: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
+    borderWidth: 1, borderColor: COLORS.border, marginRight: 8, backgroundColor: '#fff',
+  },
+  filterBtnActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  filterBtnT: { fontSize: 12, fontWeight: '600', color: COLORS.darkGray },
 });
