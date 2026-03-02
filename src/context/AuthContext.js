@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { Alert } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import { supabase } from '../lib/supabase';
 
 // ---------------------------------------------------------------------------
@@ -195,11 +195,15 @@ export const AuthProvider = ({ children }) => {
   }, [fetchProfile, fetchAllUsers]);
 
   // ------------------------------------------------------------------
-  // LOGIN
+  // LOGIN – Auth locale (vérifie mot_de_passe dans djangui_membres)
   // ------------------------------------------------------------------
   const login = async (loginInput, password) => {
     if (!loginInput?.trim() || !password) {
-      Alert.alert('Erreur', 'Identifiant et mot de passe requis.');
+      if (Platform.OS === 'web') {
+        window.alert('Identifiant et mot de passe requis.');
+      } else {
+        Alert.alert('Erreur', 'Identifiant et mot de passe requis.');
+      }
       return false;
     }
 
@@ -225,99 +229,22 @@ export const AuthProvider = ({ children }) => {
       // Verifier que le compte est actif
       if (membre.actif === false || membre.actif === 0) {
         setIsLoading(false);
-        Alert.alert('Compte inactif', "Contactez l'administrateur.");
+        const msg = 'Ce compte est inactif. Contactez l\'administrateur.';
+        if (Platform.OS === 'web') { window.alert(msg); } else { Alert.alert('Compte inactif', msg); }
         return false;
       }
 
-      const memberEmail = (membre.email || '').trim();
-      if (!memberEmail) {
+      // 2. Vérifier le mot de passe localement
+      const storedPwd = membre.mot_de_passe || '123456';
+      if (password !== storedPwd) {
         setIsLoading(false);
-        Alert.alert('Erreur', "Aucun email associe a ce compte. Contactez l'administrateur.");
+        const msg = 'Mot de passe incorrect.';
+        if (Platform.OS === 'web') { window.alert(msg); } else { Alert.alert('Erreur', msg); }
         return false;
       }
 
-      // 2. Tenter la connexion Supabase Auth
-      let authUser = null;
-
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-        email: memberEmail,
-        password,
-      });
-
-      if (signInError) {
-        // Le compte auth n'existe peut-etre pas encore (premier login)
-        if (
-          signInError.message.includes('Invalid login credentials') ||
-          signInError.message.includes('invalid_credentials') ||
-          signInError.message.includes('Email not confirmed')
-        ) {
-          // 3. Auto-creation du compte auth si premiere connexion
-          const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-            email: memberEmail,
-            password,
-            options: {
-              data: {
-                nom: membre.nom,
-                prenom: membre.prenom || membre.login,
-                role: membre.role || 'membre',
-              },
-            },
-          });
-
-          if (signUpError) {
-            // Supabase Auth totalement inaccessible -> fallback admin local
-            console.warn('[AuthContext] signUp failed:', signUpError.message);
-            return handleFallbackLogin(input, password);
-          }
-
-          authUser = signUpData?.user;
-
-          // Si l'email n'est pas confirme automatiquement, tenter un sign-in direct
-          if (!signUpData?.session && authUser) {
-            const { data: retryData, error: retryError } = await supabase.auth.signInWithPassword({
-              email: memberEmail,
-              password,
-            });
-            if (retryError) {
-              // Email confirmation requise - informer l'utilisateur
-              setIsLoading(false);
-              Alert.alert(
-                'Compte cree',
-                'Un email de confirmation a ete envoye. Verifiez votre boite mail puis reconnectez-vous.'
-              );
-              return false;
-            }
-            authUser = retryData?.user;
-          }
-        } else {
-          // Autre erreur auth (reseau, etc.) -> fallback admin
-          console.warn('[AuthContext] signIn error:', signInError.message);
-          return handleFallbackLogin(input, password);
-        }
-      } else {
-        authUser = signInData?.user;
-      }
-
-      if (!authUser) {
-        setIsLoading(false);
-        Alert.alert('Erreur', 'Echec de l\'authentification.');
-        return false;
-      }
-
-      // 4. Lier auth_id au membre si pas encore fait
-      if (!membre.auth_id || membre.auth_id !== authUser.id) {
-        const { error: updateError } = await supabase
-          .from('djangui_membres')
-          .update({ auth_id: authUser.id })
-          .eq('id', membre.id);
-
-        if (updateError) {
-          console.warn('[AuthContext] Erreur liaison auth_id:', updateError.message);
-        }
-      }
-
-      // 5. Construire l'objet utilisateur
-      const userProfile = mapMembreToUser({ ...membre, auth_id: authUser.id });
+      // 3. Construire l'objet utilisateur directement (pas de Supabase Auth)
+      const userProfile = mapMembreToUser(membre);
       setCurrentUser(userProfile);
       await fetchAllUsers();
       setIsLoading(false);
@@ -345,12 +272,11 @@ export const AuthProvider = ({ children }) => {
 
     setIsLoading(false);
     if (reason === 'not_found') {
-      Alert.alert('Erreur', 'Identifiant introuvable. Verifiez votre login, email ou telephone.');
+      const msg = 'Identifiant introuvable. Verifiez votre login, email ou telephone.';
+      if (Platform.OS === 'web') { window.alert(msg); } else { Alert.alert('Erreur', msg); }
     } else {
-      Alert.alert(
-        'Erreur de connexion',
-        'Impossible de joindre le serveur. Verifiez votre connexion internet.'
-      );
+      const msg = 'Impossible de joindre le serveur. Verifiez votre connexion internet.';
+      if (Platform.OS === 'web') { window.alert(msg); } else { Alert.alert('Erreur de connexion', msg); }
     }
     return false;
   };
@@ -372,31 +298,24 @@ export const AuthProvider = ({ children }) => {
   // CHANGER MOT DE PASSE (pour le user connecte)
   // ------------------------------------------------------------------
   const changerMotDePasse = async (userId, newPassword) => {
-    if (!newPassword || newPassword.length < 6) {
-      Alert.alert('Erreur', 'Le mot de passe doit contenir au moins 6 caracteres.');
+    if (!newPassword || newPassword.length < 4) {
+      const msg = 'Le mot de passe doit contenir au moins 4 caracteres.';
+      if (Platform.OS === 'web') { window.alert(msg); } else { Alert.alert('Erreur', msg); }
       return false;
     }
 
     try {
-      // Mettre a jour le mot de passe dans Supabase Auth
-      const { error: authError } = await supabase.auth.updateUser({
-        password: newPassword,
-      });
-
-      if (authError) {
-        console.warn('[AuthContext] changerMotDePasse auth error:', authError.message);
-        Alert.alert('Erreur', 'Impossible de mettre a jour le mot de passe : ' + authError.message);
-        return false;
-      }
-
-      // Mettre a jour must_change_password dans djangui_membres
+      // Mettre a jour le mot de passe dans djangui_membres
       const { error: dbError } = await supabase
         .from('djangui_membres')
-        .update({ must_change_password: false })
+        .update({ mot_de_passe: newPassword, must_change_password: false })
         .eq('id', userId);
 
       if (dbError) {
         console.warn('[AuthContext] changerMotDePasse DB error:', dbError.message);
+        const msg = 'Impossible de mettre a jour le mot de passe.';
+        if (Platform.OS === 'web') { window.alert(msg); } else { Alert.alert('Erreur', msg); }
+        return false;
       }
 
       // Mettre a jour l'etat local
@@ -410,12 +329,8 @@ export const AuthProvider = ({ children }) => {
       return true;
     } catch (err) {
       console.warn('[AuthContext] changerMotDePasse exception:', err.message);
-      // Fallback local si admin hors-ligne
-      if (currentUser && !currentUser.auth_id) {
-        setCurrentUser((prev) => ({ ...prev, mustChangePassword: false }));
-        return true;
-      }
-      Alert.alert('Erreur', 'Impossible de mettre a jour le mot de passe.');
+      const msg = 'Impossible de mettre a jour le mot de passe.';
+      if (Platform.OS === 'web') { window.alert(msg); } else { Alert.alert('Erreur', msg); }
       return false;
     }
   };
@@ -451,75 +366,30 @@ export const AuthProvider = ({ children }) => {
   };
 
   // ------------------------------------------------------------------
-  // REINITIALISER MOT DE PASSE PAR L'ADMIN (super admin reset)
+  // REINITIALISER MOT DE PASSE PAR L'ADMIN (direct DB update)
   // ------------------------------------------------------------------
   const adminResetPassword = async (membreId, newPassword) => {
-    if (currentUser?.role !== 'superadmin') {
-      Alert.alert('Erreur', 'Seul le super admin peut reinitialiser un mot de passe.');
-      return false;
-    }
-
-    if (!newPassword || newPassword.length < 6) {
-      Alert.alert('Erreur', 'Le mot de passe doit contenir au moins 6 caracteres.');
-      return false;
-    }
+    const pwd = newPassword || '123456';
 
     try {
-      // Trouver le membre dans la base
-      const { data: membre, error: fetchError } = await supabase
+      const { error } = await supabase
         .from('djangui_membres')
-        .select('*')
-        .eq('id', membreId)
-        .maybeSingle();
-
-      if (fetchError || !membre) {
-        Alert.alert('Erreur', 'Membre introuvable.');
-        return false;
-      }
-
-      if (!membre.auth_id) {
-        // Le membre n'a pas encore de compte auth, on marque juste le flag
-        await supabase
-          .from('djangui_membres')
-          .update({ must_change_password: true })
-          .eq('id', membreId);
-
-        setUsers((prev) =>
-          prev.map((u) => (u.id === membreId ? { ...u, mustChangePassword: true } : u))
-        );
-
-        Alert.alert(
-          'Info',
-          'Ce membre n\'a pas encore de compte. Le mot de passe sera defini a sa premiere connexion.'
-        );
-        return true;
-      }
-
-      // Utiliser l'admin API via une edge function ou directement si on a le service_role
-      // Note: Supabase client-side ne peut pas changer le mdp d'un autre user.
-      // On marque must_change_password et on informe l'admin.
-      await supabase
-        .from('djangui_membres')
-        .update({ must_change_password: true })
+        .update({ mot_de_passe: pwd, must_change_password: true })
         .eq('id', membreId);
+
+      if (error) throw error;
 
       setUsers((prev) =>
         prev.map((u) => (u.id === membreId ? { ...u, mustChangePassword: true } : u))
       );
 
-      // Envoyer un email de reinitialisation
-      if (membre.email) {
-        await supabase.auth.resetPasswordForEmail(membre.email.trim());
-      }
-
-      Alert.alert(
-        'Reinitialisation',
-        'Un email de reinitialisation a ete envoye a ' + (membre.email || 'l\'adresse du membre') + '.'
-      );
+      const msg = `Mot de passe reinitialise a "${pwd}".`;
+      if (Platform.OS === 'web') { window.alert(msg); } else { Alert.alert('Succes', msg); }
       return true;
     } catch (err) {
       console.warn('[AuthContext] adminResetPassword error:', err.message);
-      Alert.alert('Erreur', 'Impossible de reinitialiser le mot de passe.');
+      const msg = 'Impossible de reinitialiser le mot de passe.';
+      if (Platform.OS === 'web') { window.alert(msg); } else { Alert.alert('Erreur', msg); }
       return false;
     }
   };

@@ -10,6 +10,7 @@ import MemberAvatar from '../../components/common/MemberAvatar';
 import { COLORS, SPACING } from '../../utils/theme';
 import { webStyle } from '../../utils/responsive';
 import { formatMontant } from '../../utils/calculations';
+import { supabase } from '../../lib/supabase';
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    CONSTANTS
@@ -139,32 +140,56 @@ export default function AdminScreen() {
   const [editTel, setEditTel] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editRole, setEditRole] = useState('membre');
+  const [editLogin, setEditLogin] = useState('');
+  const [editPassword, setEditPassword] = useState('');
 
   /* ═══════════ COMPTES / FONDS STATE ═══════════ */
   const [debitType, setDebitType] = useState('retenue_1_5');
   const [debitMontant, setDebitMontant] = useState('');
   const [debitDesc, setDebitDesc] = useState('');
   const [showDebitModal, setShowDebitModal] = useState(false);
+  const [showCreditModal, setShowCreditModal] = useState(false);
+  const [creditType, setCreditType] = useState('retenue_1_5');
+  const [creditMontant, setCreditMontant] = useState('');
+  const [creditDesc, setCreditDesc] = useState('');
 
-  // Computed fund balances
+  // Computed fund balances: from versements (automatic) + fonds ledger (manual adjustments)
   const fondsSoldes = useMemo(() => {
-    const retCredits = (fonds || []).filter(f => f.type === 'retenue_1_5' && f.operation === 'credit')
+    // 1. Retenues 1.5% = calculated from all cotisation versements
+    const totalCotisations = (versements || [])
+      .filter(v => v.type === 'contribution')
+      .reduce((s, v) => s + (Number(v.montant) || 0), 0);
+    const retenueAuto = Math.round(totalCotisations * (parseFloat(config?.taux_retenue_epargne || 1.5) / 100));
+
+    // 2. Caisse projet = sum of all versements with type='caisse_projet'
+    const caisseProjetAuto = (versements || [])
+      .filter(v => v.type === 'caisse_projet')
+      .reduce((s, v) => s + (Number(v.montant) || 0), 0);
+
+    // 3. Manual ledger entries from djangui_fonds
+    const retManualCredits = (fonds || []).filter(f => f.type === 'retenue_1_5' && f.operation === 'credit')
       .reduce((s, f) => s + (Number(f.montant) || 0), 0);
-    const retDebits = (fonds || []).filter(f => f.type === 'retenue_1_5' && f.operation === 'debit')
+    const retManualDebits = (fonds || []).filter(f => f.type === 'retenue_1_5' && f.operation === 'debit')
       .reduce((s, f) => s + (Number(f.montant) || 0), 0);
-    const cpCredits = (fonds || []).filter(f => f.type === 'caisse_projet' && f.operation === 'credit')
+    const cpManualCredits = (fonds || []).filter(f => f.type === 'caisse_projet' && f.operation === 'credit')
       .reduce((s, f) => s + (Number(f.montant) || 0), 0);
-    const cpDebits = (fonds || []).filter(f => f.type === 'caisse_projet' && f.operation === 'debit')
+    const cpManualDebits = (fonds || []).filter(f => f.type === 'caisse_projet' && f.operation === 'debit')
       .reduce((s, f) => s + (Number(f.montant) || 0), 0);
+
+    const retenueTotal = retenueAuto + retManualCredits;
+    const caisseProjetTotal = caisseProjetAuto + cpManualCredits;
+
     return {
-      retenueSolde: retCredits - retDebits,
-      retenueCredits: retCredits,
-      retenueDebits: retDebits,
-      caisseProjetSolde: cpCredits - cpDebits,
-      caisseProjetCredits: cpCredits,
-      caisseProjetDebits: cpDebits,
+      retenueAuto,
+      retenueSolde: retenueTotal - retManualDebits,
+      retenueCredits: retenueTotal,
+      retenueDebits: retManualDebits,
+      caisseProjetAuto,
+      caisseProjetSolde: caisseProjetTotal - cpManualDebits,
+      caisseProjetCredits: caisseProjetTotal,
+      caisseProjetDebits: cpManualDebits,
     };
-  }, [fonds]);
+  }, [fonds, versements, config]);
 
   const handleDebit = async () => {
     const mt = parseInt(debitMontant) || 0;
@@ -180,6 +205,16 @@ export default function AdminScreen() {
     setDebitDesc('');
     setShowDebitModal(false);
     webAlert('Debit enregistre', `${formatMontant(mt)} FCFA debites du compte ${debitType === 'retenue_1_5' ? 'Retenues 1.5%' : 'Caisse Projet'}.`);
+  };
+
+  const handleCredit = async () => {
+    const mt = parseInt(creditMontant) || 0;
+    if (mt <= 0) { webAlert('Erreur', 'Montant invalide.'); return; }
+    await ajouterFonds(creditType, 'credit', mt, creditDesc.trim() || 'Credit manuel', null);
+    setCreditMontant('');
+    setCreditDesc('');
+    setShowCreditModal(false);
+    webAlert('Credit enregistre', `${formatMontant(mt)} FCFA credites au compte ${creditType === 'retenue_1_5' ? 'Retenues 1.5%' : 'Caisse Projet'}.`);
   };
 
   /* ═══════════ DERIVED DATA ═══════════ */
@@ -571,29 +606,40 @@ export default function AdminScreen() {
   };
 
   /* ═══════════ EDIT MEMBER HANDLER ═══════════ */
-  const openEditMember = (u) => {
+  const openEditMember = async (u) => {
+    // Fetch full row from DB to get login and mot_de_passe
+    let login = u.login || '';
+    let mdp = '';
+    try {
+      const { data } = await supabase.from('djangui_membres').select('login,mot_de_passe').eq('id', u.id).maybeSingle();
+      if (data) { login = data.login || ''; mdp = data.mot_de_passe || ''; }
+    } catch (_) { /* ignore */ }
     setEditMember(u);
     setEditNom(u.nom || '');
     setEditPrenom(u.prenom || '');
     setEditTel(u.telephone || '');
     setEditEmail(u.email || '');
     setEditRole(u.role || 'membre');
+    setEditLogin(login);
+    setEditPassword(mdp);
   };
 
   const handleSaveEditMember = async () => {
     if (!editMember) return;
     try {
-      // Use mettreAJourProfil from AuthContext (updates djangui_membres + local state)
-      await mettreAJourProfil(editMember.id, {
+      // Build update object with all editable fields
+      const updates = {
         nom: editNom.trim(),
         prenom: editPrenom.trim(),
         telephone: editTel.trim(),
         email: editEmail.trim(),
-      });
-      // Update role separately if changed (requires direct DB update)
-      if (editRole !== editMember.role && modifierMembre) {
-        await modifierMembre(editMember.id, { role: editRole });
-      }
+        role: editRole,
+      };
+      if (editLogin.trim()) updates.login = editLogin.trim().toLowerCase();
+      if (editPassword.trim()) updates.mot_de_passe = editPassword.trim();
+
+      // Direct DB update for all fields at once
+      await modifierMembre(editMember.id, updates);
       setEditMember(null);
       if (fetchAllUsers) await fetchAllUsers();
       await refreshAll();
@@ -1403,38 +1449,38 @@ export default function AdminScreen() {
 
             {/* ── Compte Retenues 1.5% ── */}
             <Card style={{ backgroundColor: '#1B5E20', marginBottom: SPACING.md }}>
-              <Text style={{ color: '#A5D6A7', fontSize: 11, fontWeight: '600' }}>COMPTE RETENUES 1.5%</Text>
+              <Text style={{ color: '#A5D6A7', fontSize: 11, fontWeight: '600' }}>COMPTE RETENUES {config?.taux_retenue_epargne || 1.5}%</Text>
               <Text style={{ color: '#fff', fontSize: 28, fontWeight: '900', marginVertical: 4 }}>
                 {formatMontant(fondsSoldes.retenueSolde)} FCFA
               </Text>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
                 <View>
-                  <Text style={{ color: '#A5D6A7', fontSize: 10 }}>Total credite</Text>
-                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>+{formatMontant(fondsSoldes.retenueCredits)} F</Text>
+                  <Text style={{ color: '#A5D6A7', fontSize: 10 }}>Calcule ({config?.taux_retenue_epargne || 1.5}% cotisations)</Text>
+                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>+{formatMontant(fondsSoldes.retenueAuto)} F</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={{ color: '#EF9A9A', fontSize: 10 }}>Total debite</Text>
+                  <Text style={{ color: '#EF9A9A', fontSize: 10 }}>Decaisse</Text>
                   <Text style={{ color: '#EF9A9A', fontSize: 13, fontWeight: '700' }}>-{formatMontant(fondsSoldes.retenueDebits)} F</Text>
                 </View>
               </View>
               <Text style={{ color: '#A5D6A7', fontSize: 10, marginTop: 6 }}>
-                Prelevement automatique de 1.5% sur le total epargne a chaque cloture de seance.
+                {config?.taux_retenue_epargne || 1.5}% preleve automatiquement sur les cotisations enregistrees.
               </Text>
             </Card>
 
             {/* ── Compte Caisse Projet ── */}
             <Card style={{ backgroundColor: '#4A148C', marginBottom: SPACING.md }}>
-              <Text style={{ color: '#CE93D8', fontSize: 11, fontWeight: '600' }}>CAISSE PROJET (10 000 F / membre / seance)</Text>
+              <Text style={{ color: '#CE93D8', fontSize: 11, fontWeight: '600' }}>CAISSE PROJET ({formatMontant(CAISSE_PROJET_DEFAUT)} F / membre / seance)</Text>
               <Text style={{ color: '#fff', fontSize: 28, fontWeight: '900', marginVertical: 4 }}>
                 {formatMontant(fondsSoldes.caisseProjetSolde)} FCFA
               </Text>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
                 <View>
-                  <Text style={{ color: '#CE93D8', fontSize: 10 }}>Total credite</Text>
-                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>+{formatMontant(fondsSoldes.caisseProjetCredits)} F</Text>
+                  <Text style={{ color: '#CE93D8', fontSize: 10 }}>Total verse</Text>
+                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>+{formatMontant(fondsSoldes.caisseProjetAuto)} F</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={{ color: '#EF9A9A', fontSize: 10 }}>Total debite</Text>
+                  <Text style={{ color: '#EF9A9A', fontSize: 10 }}>Decaisse</Text>
                   <Text style={{ color: '#EF9A9A', fontSize: 13, fontWeight: '700' }}>-{formatMontant(fondsSoldes.caisseProjetDebits)} F</Text>
                 </View>
               </View>
@@ -1443,15 +1489,25 @@ export default function AdminScreen() {
               </Text>
             </Card>
 
-            {/* ── Bouton déclarer un débit ── */}
-            <TouchableOpacity
-              style={[st.btnDanger, { marginBottom: SPACING.md }]}
-              onPress={() => setShowDebitModal(true)}
-            >
-              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
-                {'\u{1F4E4}'} Declarer un decaissement
-              </Text>
-            </TouchableOpacity>
+            {/* ── Boutons d'action ── */}
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.md }}>
+              <TouchableOpacity
+                style={[st.btnDanger, { flex: 1 }]}
+                onPress={() => setShowDebitModal(true)}
+              >
+                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+                  {'\u{1F4E4}'} Decaissement
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[st.btnPri, { flex: 1 }]}
+                onPress={() => setShowCreditModal(true)}
+              >
+                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+                  {'\u{1F4E5}'} Credit manuel
+                </Text>
+              </TouchableOpacity>
+            </View>
 
             {/* ── Historique des mouvements ── */}
             <Text style={st.sectionTitle}>Historique des mouvements</Text>
@@ -1766,39 +1822,113 @@ export default function AdminScreen() {
       {/* ═══════════ MODAL EDIT MEMBRE ═══════════ */}
       <Modal visible={!!editMember} transparent animationType="slide">
         <View style={st.overlay}>
+          <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+            <View style={[st.modalSheet, isDesktop && { maxWidth: 440, width: '100%' }, { width: '100%', maxWidth: 440 }]}>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: COLORS.primary, marginBottom: SPACING.md }}>
+                {'\u270F\uFE0F'} Modifier : {editMember?.prenom || editMember?.nom || ''}
+              </Text>
+              <Text style={st.fieldLabel}>Prenom</Text>
+              <TextInput style={st.input} value={editPrenom} onChangeText={setEditPrenom} placeholder="Prenom" />
+              <Text style={st.fieldLabel}>Nom complet</Text>
+              <TextInput style={st.input} value={editNom} onChangeText={setEditNom} placeholder="Nom" />
+              <Text style={st.fieldLabel}>Telephone</Text>
+              <TextInput style={st.input} value={editTel} onChangeText={setEditTel} placeholder="Telephone" keyboardType="phone-pad" />
+              <Text style={st.fieldLabel}>Email</Text>
+              <TextInput style={st.input} value={editEmail} onChangeText={setEditEmail} placeholder="Email" keyboardType="email-address" />
+
+              <View style={{ borderTopWidth: 1, borderTopColor: COLORS.border, marginVertical: SPACING.sm, paddingTop: SPACING.sm }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: COLORS.darkGray, marginBottom: 6 }}>
+                  {'\u{1F511}'} Identifiants de connexion
+                </Text>
+                <Text style={st.fieldLabel}>Login (identifiant)</Text>
+                <TextInput style={st.input} value={editLogin} onChangeText={setEditLogin} placeholder="ex: gaetan" autoCapitalize="none" />
+                <Text style={st.fieldLabel}>Mot de passe</Text>
+                <TextInput style={st.input} value={editPassword} onChangeText={setEditPassword} placeholder="Nouveau mot de passe" />
+                <Text style={{ fontSize: 10, color: COLORS.gray, marginTop: -4, marginBottom: 8 }}>
+                  Laissez vide pour ne pas changer le mot de passe.
+                </Text>
+              </View>
+
+              <Text style={st.fieldLabel}>Role</Text>
+              <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginBottom: SPACING.md }}>
+                {ROLES_LIST.map(r => (
+                  <TouchableOpacity
+                    key={r}
+                    style={[st.chip, editRole === r && st.chipA]}
+                    onPress={() => setEditRole(r)}
+                  >
+                    <Text style={{
+                      fontSize: 11, fontWeight: '600',
+                      color: editRole === r ? '#fff' : COLORS.darkGray,
+                    }}>
+                      {RL[r] || r}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <TouchableOpacity style={st.btnPri} onPress={handleSaveEditMember}>
+                <Text style={{ color: '#fff', fontWeight: '700' }}>Enregistrer les modifications</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setEditMember(null)}>
+                <Text style={{ textAlign: 'center', marginTop: 14, color: COLORS.gray }}>Annuler</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* ═══════════ MODAL CREDIT FONDS ═══════════ */}
+      <Modal visible={showCreditModal} transparent animationType="slide">
+        <View style={st.overlay}>
           <View style={[st.modalSheet, isDesktop && { maxWidth: 440, alignSelf: 'center', width: '100%' }]}>
             <Text style={{ fontSize: 18, fontWeight: '700', color: COLORS.primary, marginBottom: SPACING.md }}>
-              {'\u270F\uFE0F'} Modifier : {editMember?.prenom || editMember?.nom || ''}
+              {'\u{1F4E5}'} Credit manuel
             </Text>
-            <Text style={st.fieldLabel}>Prenom</Text>
-            <TextInput style={st.input} value={editPrenom} onChangeText={setEditPrenom} placeholder="Prenom" />
-            <Text style={st.fieldLabel}>Nom complet</Text>
-            <TextInput style={st.input} value={editNom} onChangeText={setEditNom} placeholder="Nom" />
-            <Text style={st.fieldLabel}>Telephone</Text>
-            <TextInput style={st.input} value={editTel} onChangeText={setEditTel} placeholder="Telephone" keyboardType="phone-pad" />
-            <Text style={st.fieldLabel}>Email</Text>
-            <TextInput style={st.input} value={editEmail} onChangeText={setEditEmail} placeholder="Email" keyboardType="email-address" />
-            <Text style={st.fieldLabel}>Role</Text>
-            <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginBottom: SPACING.md }}>
-              {ROLES_LIST.map(r => (
-                <TouchableOpacity
-                  key={r}
-                  style={[st.chip, editRole === r && st.chipA]}
-                  onPress={() => setEditRole(r)}
-                >
-                  <Text style={{
-                    fontSize: 11, fontWeight: '600',
-                    color: editRole === r ? '#fff' : COLORS.darkGray,
-                  }}>
-                    {RL[r] || r}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+
+            <Text style={st.fieldLabel}>Compte a crediter</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.md }}>
+              <TouchableOpacity
+                style={[st.chip, creditType === 'retenue_1_5' && { backgroundColor: '#1B5E20', borderColor: '#1B5E20' }]}
+                onPress={() => setCreditType('retenue_1_5')}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '600', color: creditType === 'retenue_1_5' ? '#fff' : COLORS.darkGray }}>
+                  Retenues 1.5%
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[st.chip, creditType === 'caisse_projet' && { backgroundColor: '#4A148C', borderColor: '#4A148C' }]}
+                onPress={() => setCreditType('caisse_projet')}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '600', color: creditType === 'caisse_projet' ? '#fff' : COLORS.darkGray }}>
+                  Caisse Projet
+                </Text>
+              </TouchableOpacity>
             </View>
-            <TouchableOpacity style={st.btnPri} onPress={handleSaveEditMember}>
-              <Text style={{ color: '#fff', fontWeight: '700' }}>Enregistrer les modifications</Text>
+
+            <Text style={st.fieldLabel}>Montant (FCFA)</Text>
+            <TextInput
+              style={st.input}
+              keyboardType="numeric"
+              value={creditMontant}
+              onChangeText={setCreditMontant}
+              placeholder="ex: 50000"
+            />
+
+            <Text style={st.fieldLabel}>Description</Text>
+            <TextInput
+              style={[st.input, { height: 60, textAlignVertical: 'top' }]}
+              multiline
+              numberOfLines={2}
+              value={creditDesc}
+              onChangeText={setCreditDesc}
+              placeholder="Ex: Ajustement report session precedente..."
+              placeholderTextColor={COLORS.gray}
+            />
+
+            <TouchableOpacity style={st.btnPri} onPress={handleCredit}>
+              <Text style={{ color: '#fff', fontWeight: '700' }}>Confirmer le credit</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setEditMember(null)}>
+            <TouchableOpacity onPress={() => setShowCreditModal(false)}>
               <Text style={{ textAlign: 'center', marginTop: 14, color: COLORS.gray }}>Annuler</Text>
             </TouchableOpacity>
           </View>
