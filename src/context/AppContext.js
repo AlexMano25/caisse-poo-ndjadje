@@ -1,158 +1,429 @@
-import React,{createContext,useContext,useState} from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import { Alert } from 'react-native';
+import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
-import {
-  MOCK_MEMBERS, MOCK_TONTINE, MOCK_HISTORIQUE_EPARGNE,
-  MOCK_PRETS, MOCK_RECAPITULATIF
-} from '../data/mockData';
-
-// Rapports initiaux de la Caisse POO NDJADJE
-const RAPPORTS_INITIAUX = [
-  { id:'rpt-001', sessionNumber:1, date:'04/11/2023', author:'Liale Gaetan',
-    title:'PV Seance Inaugurale — Novembre 2023',
-    content:'Seance d inauguration de la Caisse POO NDJADJE.\nPresents: tous les membres fondateurs.\nBureau elu:\n- Presidente: Djoubi Soline\n- Tresorier: Neutchedje Gamaliel\n- Secretaire: Liale Gaetan\nAdhesion: 50 000 FCFA par membre.\nRegles: Taux epargne 27.4%/an, Taux pret 7.5%/trimestre, Retenue 1.5% sur interets.\nTotal adhesions collectees: 750 000 FCFA.', isPublished:true },
-  { id:'rpt-002', sessionNumber:2, date:'04/02/2024', author:'Liale Gaetan',
-    title:'PV Seance — Fevrier 2024',
-    content:'Seance du 04/02/2024.\nPresents: Motho J., Domche A., Liale G., Hako B., Teguem A., Djoubi S., Nono E.\nVersements epargne enregistres: 855 000 FCFA.\nPrets accordes: Kahoue Jair (400 000 F), Youte Priscille (1 050 000 F).\nSolde caisse: excedent verse a la banque.', isPublished:true },
-  { id:'rpt-003', sessionNumber:3, date:'02/11/2024', author:'Liale Gaetan',
-    title:'PV Seance — Novembre 2024 (Cloture annee)',
-    content:'Seance de cloture 2024 du 02/11/2024.\nTotal epargne 2024: 2 650 000 FCFA.\nTotal interets epargne: 396 518 FCFA.\nRetenues (1.5%): 92 229 FCFA.\nSolde cumule membres: 3 046 518 FCFA.\nSanctions appliquees: 131 225 FCFA.\nReconduction du bureau pour 2025.', isPublished:true },
-  { id:'rpt-004', sessionNumber:4, date:'15/11/2025', author:'Liale Gaetan',
-    title:'PV Seance — Novembre 2025 (Bilan annuel)',
-    content:'Seance annuelle du 15/11/2025.\nTotal epargne 2025: 6 270 793 FCFA.\nTotal interets epargne: 1 439 368 FCFA.\nRetenues (1.5%): 355 942 FCFA.\nSolde final membres: 7 710 161 FCFA.\nPrets en cours: 9 prets pour 9 556 200 FCFA.\nTotal a rembourser: 10 272 915 FCFA.\nDecisions: renouvellement bureau, prochaine seance 28/02/2026.', isPublished:true },
-];
-
-const MESSAGES_INITIAUX = [
-  {
-    id: 'msg-001',
-    titre: 'Bienvenue sur Caisse POO NDJADJE 🎉',
-    contenu: 'L’application de gestion de notre tontine est maintenant disponible. Connectez-vous et consultez votre espace personnel.',
-    type: 'info',
-    auteur: 'Djoubi Soline',
-    role: 'president',
-    date: '28/02/2026',
-    lus: [],
-  },
-];
+import { calculerRecapAnnuel } from '../utils/calculations';
 
 const AppContext = createContext();
 
-export const AppProvider = ({children}) => {
+// ---------------------------------------------------------------------------
+// Helper: safe Supabase query with error handling
+// ---------------------------------------------------------------------------
+async function query(table, options = {}) {
+  let q = supabase.from(table).select(options.select || '*');
+  if (options.order) {
+    q = q.order(options.order.column, { ascending: options.order.ascending ?? false });
+  }
+  if (options.eq) {
+    for (const [col, val] of Object.entries(options.eq)) {
+      q = q.eq(col, val);
+    }
+  }
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
+// ---------------------------------------------------------------------------
+// Provider
+// ---------------------------------------------------------------------------
+export const AppProvider = ({ children }) => {
   const { currentUser } = useAuth();
-  const [membres, setMembres] = useState(MOCK_MEMBERS);
-  const [tontine]        = useState(MOCK_TONTINE);
-  const [historique, setHistorique] = useState(MOCK_HISTORIQUE_EPARGNE);
-  const [prets, setPrets] = useState(MOCK_PRETS);
-  const [recap]          = useState(MOCK_RECAPITULATIF);
-  const [rapports,  setRapports]  = useState(RAPPORTS_INITIAUX);
-  const [messages,  setMessages]  = useState(MESSAGES_INITIAUX);
 
-  // Calculer intérêt épargne selon durée (taux annuel prorata)
-  const calculerInteret = (montant, dateDepot, tauxAnnuel = 27.40) => {
-    const debut = new Date(dateDepot.split('/').reverse().join('-'));
-    const fin   = new Date();
-    const jours = Math.max(0, (fin - debut) / (1000 * 60 * 60 * 24));
-    return Math.round(montant * (tauxAnnuel / 100) * (jours / 365));
-  };
+  // ── State ────────────────────────────────────────────────────────────────
+  const [config, setConfig]               = useState(null);
+  const [membres, setMembres]             = useState([]);
+  const [seances, setSeances]             = useState([]);
+  const [versements, setVersements]       = useState([]);
+  const [prets, setPrets]                 = useState([]);
+  const [remboursements, setRemboursements] = useState([]);
+  const [messages, setMessages]           = useState([]);
+  const [rapports, setRapports]           = useState([]);
+  const [sanctions, setSanctions]         = useState([]);
+  const [isLoading, setIsLoading]         = useState(true);
 
-  // Calculer intérêt prêt : 7.5% par trimestre (90 jours)
-  const calculerInteretPret = (montant, nbTrimestres = 1) => {
-    return Math.round(montant * 0.075 * nbTrimestres);
-  };
+  // ── Derived: recap (memoised, recomputed when deps change) ──────────────
+  const recap = useMemo(() => {
+    if (!config || membres.length === 0) {
+      return {
+        annee: config?.annee_courante || new Date().getFullYear(),
+        totalEpargne: 0,
+        totalInterets: 0,
+        totalRetenues: 0,
+        totalSoldes: 0,
+        totalAdhesions: 0,
+        totalPrets: 0,
+        totalInteretsPrets: 0,
+        totalARembourser: 0,
+        fondDeCaisse: 0,
+        membresCalcul: [],
+      };
+    }
+    return calculerRecapAnnuel(
+      membres,
+      versements,
+      prets,
+      config,
+      config.annee_courante,
+    );
+  }, [membres, versements, prets, config]);
 
-  // Ajouter un versement épargne
-  const ajouterEpargne = (membreId, montant, seance, annee) => {
-    const m = membres.find(x => x.id === membreId);
-    const dep = {
-      id: 'dep-' + Date.now(),
-      membreId, nom: m?.nom || '',
-      seance, montant, annee
-    };
-    setHistorique(prev => [...prev, dep]);
-  };
+  // ── Data loading ────────────────────────────────────────────────────────
+  const fetchAll = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [
+        configRows,
+        membresData,
+        seancesData,
+        versementsData,
+        pretsData,
+        remboursementsData,
+        messagesData,
+        rapportsData,
+        sanctionsData,
+      ] = await Promise.all([
+        query('djangui_config'),
+        query('djangui_membres', { order: { column: 'nom', ascending: true } }),
+        query('djangui_seances', { order: { column: 'date', ascending: true } }),
+        query('djangui_versements', { order: { column: 'date', ascending: false } }),
+        query('djangui_prets', { order: { column: 'created_at', ascending: false } }),
+        query('djangui_remboursements', { order: { column: 'created_at', ascending: false } }),
+        query('djangui_messages', { order: { column: 'created_at', ascending: false } }),
+        query('djangui_rapports', { order: { column: 'created_at', ascending: false } }),
+        query('djangui_sanctions', { order: { column: 'created_at', ascending: false } }),
+      ]);
 
-  // Accorder un prêt : 7.5% par trimestre
-  const accorderPret = (membreId, montant, nbTrimestres = 1) => {
-    const m = membres.find(x => x.id === membreId);
-    const interet = Math.round(montant * 0.075 * nbTrimestres);
-    const pret = {
-      id: 'prt-' + Date.now(),
-      membreId, nom: m?.nom || '',
-      montant, interet, nbTrimestres,
-      aRembourser: montant + interet,
-      statut: 'en_cours', taux: 7.5,
-      date: new Date().toISOString().split('T')[0],
-    };
-    setPrets(prev => [...prev, pret]);
-  };
+      // Config is a single-row table; take the first row
+      setConfig(configRows.length > 0 ? configRows[0] : null);
+      setMembres(membresData);
+      setSeances(seancesData);
+      setVersements(versementsData);
+      setPrets(pretsData);
+      setRemboursements(remboursementsData);
+      setMessages(messagesData);
+      setRapports(rapportsData);
+      setSanctions(sanctionsData);
+    } catch (err) {
+      console.error('[AppContext] fetchAll error:', err);
+      Alert.alert('Erreur de chargement', err.message || 'Impossible de charger les donnees.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
-  // Publier un rapport de séance
-  const publierRapport = (titre, contenu) => {
-    const rpt = {
-      id: 'rpt-' + Date.now(),
-      sessionNumber: rapports.length + 1,
-      date: new Date().toLocaleDateString('fr-FR'),
-      author: currentUser?.nom || '',
-      title: titre, content: contenu,
-      isPublished: true,
-    };
-    setRapports(prev => [rpt, ...prev]);
-  };
+  // Load on mount
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
 
-  // Envoyer un message/annonce à tous les membres
-  const envoyerMessage = (titre, contenu, type = 'info') => {
-    const msg = {
-      id: 'msg-' + Date.now(),
-      titre, contenu, type,
-      auteur: currentUser?.nom || '',
-      role:   currentUser?.role || '',
-      date:   new Date().toLocaleDateString('fr-FR'),
-      lus:    [],
-    };
-    setMessages(prev => [msg, ...prev]);
-    return msg;
-  };
+  // ── refreshAll (public) ─────────────────────────────────────────────────
+  const refreshAll = useCallback(() => fetchAll(), [fetchAll]);
 
-  // Marquer un message comme lu
-  const marquerLu = (msgId, userId) => {
-    setMessages(prev => prev.map(m =>
-      m.id === msgId && !m.lus.includes(userId)
-        ? {...m, lus: [...m.lus, userId]}
-        : m
-    ));
-  };
+  // ── updateConfig ────────────────────────────────────────────────────────
+  const updateConfig = useCallback(async (data) => {
+    try {
+      if (!config?.id) {
+        Alert.alert('Erreur', 'Configuration introuvable.');
+        return;
+      }
+      const { error } = await supabase
+        .from('djangui_config')
+        .update(data)
+        .eq('id', config.id);
+      if (error) throw error;
+      setConfig((prev) => ({ ...prev, ...data }));
+    } catch (err) {
+      console.error('[AppContext] updateConfig error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de mise a jour de la configuration.');
+    }
+  }, [config]);
 
-  // Rembourser un prêt
-  const rembourserPret = (pretId) => {
-    setPrets(prev => prev.map(p =>
-      p.id === pretId ? {...p, statut:'rembourse'} : p
-    ));
-  };
+  // ── ajouterVersement ────────────────────────────────────────────────────
+  const ajouterVersement = useCallback(async (membreId, seanceId, montant, type, annee) => {
+    try {
+      const { error } = await supabase.from('djangui_versements').insert({
+        membre_id: membreId,
+        seance_id: seanceId,
+        montant,
+        type: type || 'epargne',
+        annee: annee || config?.annee_courante || new Date().getFullYear(),
+        date: new Date().toISOString(),
+      });
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] ajouterVersement error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de l\'enregistrement du versement.');
+    }
+  }, [config, refreshAll]);
 
-  // Appliquer une sanction
-  const appliquerSanction = (membreId, montant, motif) => {
-    const m = membres.find(x => x.id === membreId);
-    const dep = {
-      id: 'sanc-' + Date.now(),
-      membreId, nom: m?.nom || '',
-      seance: new Date().toLocaleDateString('fr-FR'),
-      montant: -montant, annee: new Date().getFullYear(),
-      type: 'sanction', motif
-    };
-    setHistorique(prev => [...prev, dep]);
-  };
+  // ── modifierVersement ───────────────────────────────────────────────────
+  const modifierVersement = useCallback(async (id, data) => {
+    try {
+      const { error } = await supabase
+        .from('djangui_versements')
+        .update(data)
+        .eq('id', id);
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] modifierVersement error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de la modification du versement.');
+    }
+  }, [refreshAll]);
+
+  // ── supprimerVersement ──────────────────────────────────────────────────
+  const supprimerVersement = useCallback(async (id) => {
+    try {
+      const { error } = await supabase
+        .from('djangui_versements')
+        .delete()
+        .eq('id', id);
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] supprimerVersement error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de la suppression du versement.');
+    }
+  }, [refreshAll]);
+
+  // ── accorderPret ────────────────────────────────────────────────────────
+  const accorderPret = useCallback(async (membreId, montant, taux, dateOctroi) => {
+    try {
+      const tauxEffectif = taux || config?.taux_interet_pret || 7.5;
+      const interet = Math.round(montant * tauxEffectif / 100);
+      const montantARembourser = montant + interet;
+
+      const { error } = await supabase.from('djangui_prets').insert({
+        membre_id: membreId,
+        montant,
+        taux: tauxEffectif,
+        interet,
+        montant_a_rembourser: montantARembourser,
+        statut: 'en_cours',
+        date_octroi: dateOctroi || new Date().toISOString(),
+      });
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] accorderPret error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de l\'accord du pret.');
+    }
+  }, [config, refreshAll]);
+
+  // ── rembourserPret ──────────────────────────────────────────────────────
+  const rembourserPret = useCallback(async (pretId, montant) => {
+    try {
+      // Insert remboursement record
+      const pret = prets.find((p) => p.id === pretId);
+      const { error: rembError } = await supabase.from('djangui_remboursements').insert({
+        pret_id: pretId,
+        membre_id: pret?.membre_id || null,
+        montant,
+        date: new Date().toISOString(),
+      });
+      if (rembError) throw rembError;
+
+      // Check total remboursements for this pret
+      if (pret) {
+        const { data: rembData } = await supabase
+          .from('djangui_remboursements')
+          .select('montant')
+          .eq('pret_id', pretId);
+        const totalRembourse = (rembData || []).reduce((s, r) => s + (r.montant || 0), 0);
+
+        // If fully repaid, mark pret as rembourse
+        if (totalRembourse >= (pret.montant_a_rembourser || pret.montant + pret.interet)) {
+          await supabase
+            .from('djangui_prets')
+            .update({ statut: 'rembourse' })
+            .eq('id', pretId);
+        }
+      }
+
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] rembourserPret error:', err);
+      Alert.alert('Erreur', err.message || 'Echec du remboursement.');
+    }
+  }, [prets, refreshAll]);
+
+  // ── envoyerMessage ──────────────────────────────────────────────────────
+  const envoyerMessage = useCallback(async (titre, contenu, type) => {
+    try {
+      const { error } = await supabase.from('djangui_messages').insert({
+        titre,
+        contenu,
+        type: type || 'info',
+        auteur_id: currentUser?.id || null,
+        lus: [],
+      });
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] envoyerMessage error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de l\'envoi du message.');
+    }
+  }, [currentUser, refreshAll]);
+
+  // ── marquerLu ───────────────────────────────────────────────────────────
+  const marquerLu = useCallback(async (msgId, userId) => {
+    try {
+      const msg = messages.find((m) => m.id === msgId);
+      if (!msg) return;
+      const lus = Array.isArray(msg.lus) ? msg.lus : [];
+      if (lus.includes(userId)) return; // already read
+
+      const newLus = [...lus, userId];
+      const { error } = await supabase
+        .from('djangui_messages')
+        .update({ lus: newLus })
+        .eq('id', msgId);
+      if (error) throw error;
+
+      // Optimistic local update
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, lus: newLus } : m)),
+      );
+    } catch (err) {
+      console.error('[AppContext] marquerLu error:', err);
+      // Silent failure for read receipts - don't bother the user
+    }
+  }, [messages]);
+
+  // ── publierRapport ──────────────────────────────────────────────────────
+  const publierRapport = useCallback(async (titre, contenu, seanceId) => {
+    try {
+      const { error } = await supabase.from('djangui_rapports').insert({
+        titre,
+        contenu,
+        seance_id: seanceId || null,
+        auteur_id: currentUser?.id || null,
+      });
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] publierRapport error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de la publication du rapport.');
+    }
+  }, [currentUser, refreshAll]);
+
+  // ── appliquerSanction ───────────────────────────────────────────────────
+  const appliquerSanction = useCallback(async (membreId, montant, motif) => {
+    try {
+      const { error } = await supabase.from('djangui_sanctions').insert({
+        membre_id: membreId,
+        montant,
+        motif,
+      });
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] appliquerSanction error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de l\'application de la sanction.');
+    }
+  }, [refreshAll]);
+
+  // ── ajouterSeance ───────────────────────────────────────────────────────
+  const ajouterSeance = useCallback(async (date, annee, description) => {
+    try {
+      const { error } = await supabase.from('djangui_seances').insert({
+        date,
+        annee: annee || config?.annee_courante || new Date().getFullYear(),
+        description: description || null,
+      });
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] ajouterSeance error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de l\'ajout de la seance.');
+    }
+  }, [config, refreshAll]);
+
+  // ── creerMembre ─────────────────────────────────────────────────────────
+  const creerMembre = useCallback(async (data) => {
+    try {
+      const { data: inserted, error } = await supabase
+        .from('djangui_membres')
+        .insert(data)
+        .select()
+        .single();
+      if (error) throw error;
+      await refreshAll();
+      return inserted;
+    } catch (err) {
+      console.error('[AppContext] creerMembre error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de la creation du membre.');
+      return null;
+    }
+  }, [refreshAll]);
+
+  // ── modifierMembre ──────────────────────────────────────────────────────
+  const modifierMembre = useCallback(async (id, data) => {
+    try {
+      const { error } = await supabase
+        .from('djangui_membres')
+        .update(data)
+        .eq('id', id);
+      if (error) throw error;
+      await refreshAll();
+    } catch (err) {
+      console.error('[AppContext] modifierMembre error:', err);
+      Alert.alert('Erreur', err.message || 'Echec de la modification du membre.');
+    }
+  }, [refreshAll]);
+
+  // ── Context value (memoised to prevent unnecessary re-renders) ──────────
+  const value = useMemo(() => ({
+    // State
+    config,
+    membres,
+    seances,
+    versements,
+    prets,
+    remboursements,
+    messages,
+    rapports,
+    sanctions,
+    recap,
+    isLoading,
+
+    // Methods
+    refreshAll,
+    updateConfig,
+    ajouterVersement,
+    modifierVersement,
+    supprimerVersement,
+    accorderPret,
+    rembourserPret,
+    envoyerMessage,
+    marquerLu,
+    publierRapport,
+    appliquerSanction,
+    ajouterSeance,
+    creerMembre,
+    modifierMembre,
+  }), [
+    config, membres, seances, versements, prets, remboursements,
+    messages, rapports, sanctions, recap, isLoading,
+    refreshAll, updateConfig, ajouterVersement, modifierVersement,
+    supprimerVersement, accorderPret, rembourserPret, envoyerMessage,
+    marquerLu, publierRapport, appliquerSanction, ajouterSeance,
+    creerMembre, modifierMembre,
+  ]);
 
   return (
-    <AppContext.Provider value={{
-      membres, tontine, historique,
-      prets, recap, rapports, messages,
-      calculerInteret, calculerInteretPret,
-      ajouterEpargne, accorderPret, rembourserPret,
-      appliquerSanction, publierRapport,
-      envoyerMessage, marquerLu,
-    }}>
+    <AppContext.Provider value={value}>
       {children}
     </AppContext.Provider>
   );
 };
 
-export const useApp = () => useContext(AppContext);
+export const useApp = () => {
+  const ctx = useContext(AppContext);
+  if (!ctx) {
+    throw new Error('useApp must be used within an AppProvider');
+  }
+  return ctx;
+};
