@@ -17,12 +17,16 @@ export default function LoginScreen({ navigation }) {
   const width = Dimensions.get('window').width;
   const isDesktop = width >= 768;
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (!identifiant.trim() || !motDePasse.trim()) {
-      Alert.alert('Champs requis', 'Entrez votre identifiant et mot de passe.');
+      if (Platform.OS === 'web') {
+        window.alert('Entrez votre identifiant et mot de passe.');
+      } else {
+        Alert.alert('Champs requis', 'Entrez votre identifiant et mot de passe.');
+      }
       return;
     }
-    login(identifiant.trim(), motDePasse);
+    await login(identifiant.trim(), motDePasse);
   };
 
   const handleForgotPassword = () => {

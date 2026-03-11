@@ -2,9 +2,11 @@ import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createStackNavigator } from '@react-navigation/stack';
+import { TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../utils/theme';
 import { useAuth } from '../context/AuthContext';
+import { webSafeAlert } from '../utils/alert';
 
 import LoginScreen from '../screens/auth/LoginScreen';
 import ChangerMotDePasseScreen from '../screens/auth/ChangerMotDePasseScreen';
@@ -78,7 +80,7 @@ function AuthNavigator() {
 }
 
 export default function AppNavigator() {
-  const { currentUser } = useAuth();
+  const { currentUser, logout } = useAuth();
   const role = currentUser?.role;
 
   // Not logged in: show auth flow
@@ -119,6 +121,16 @@ export default function AppNavigator() {
           headerStyle: { backgroundColor: COLORS.primary },
           headerTintColor: '#fff',
           headerTitleStyle: { fontWeight: '800' },
+          headerRight: () => (
+            <TouchableOpacity
+              onPress={() =>
+                webSafeAlert('Deconnexion', 'Voulez-vous vous deconnecter ?', () => logout())
+              }
+              style={{ marginRight: 14, padding: 6 }}
+            >
+              <Ionicons name="log-out-outline" size={24} color="#fff" />
+            </TouchableOpacity>
+          ),
         })}
       >
         <Tab.Screen

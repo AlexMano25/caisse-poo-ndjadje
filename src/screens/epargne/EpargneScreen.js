@@ -1,15 +1,16 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  Modal, TextInput, Alert, Dimensions,
+  Modal, TextInput, Dimensions,
 } from 'react-native';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
 import Card from '../../components/common/Card';
 import MemberAvatar from '../../components/common/MemberAvatar';
 import { COLORS, SPACING } from '../../utils/theme';
-import { webStyle, responsiveValue } from '../../utils/responsive';
-import { formatMontant, calculerInteretsEpargne } from '../../utils/calculations';
+import { webStyle } from '../../utils/responsive';
+import { formatMontant } from '../../utils/calculations';
+import { webSafeInfo } from '../../utils/alert';
 
 const ANNEES = [2024, 2025, 2026];
 
@@ -23,6 +24,7 @@ export default function EpargneScreen() {
   const [selSeance, setSelSeance] = useState('');
   const [annee, setAnnee] = useState(config?.annee_courante || 2025);
   const [filterMembre, setFilterMembre] = useState('');
+  const [filterSeanceId, setFilterSeanceId] = useState('all'); // 'all' or a seance id
 
   const width = Dimensions.get('window').width;
   const isDesktop = width >= 768;
@@ -30,52 +32,90 @@ export default function EpargneScreen() {
 
   // Filter seances by year
   const seancesForYear = useMemo(() => {
-    return (seances || []).filter(s => s.annee === annee);
+    return (seances || [])
+      .filter(s => s.annee === annee)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
   }, [seances, annee]);
 
-  // Filter versements by year and optionally by member
+  // Auto-select last seance when year changes
+  useEffect(() => {
+    if (seancesForYear.length > 0) {
+      setFilterSeanceId(seancesForYear[seancesForYear.length - 1].id);
+    } else {
+      setFilterSeanceId('all');
+    }
+  }, [seancesForYear]);
+
+  // Filter versements by year, seance, and optionally by member
   const versementsFiltres = useMemo(() => {
     let v = (versements || []).filter(h => h.annee === annee && (h.type === 'epargne' || !h.type));
+    if (filterSeanceId && filterSeanceId !== 'all') {
+      v = v.filter(h => h.seance_id === filterSeanceId);
+    }
     if (filterMembre) {
-      // Need to look up member name from membres array
       const q = filterMembre.toLowerCase();
       v = v.filter(h => {
-        const m = (membres || []).find(m => m.id === h.membre_id);
+        const m = (membres || []).find(mb => mb.id === h.membre_id);
         return m && (m.nom || '').toLowerCase().includes(q);
       });
     }
     return v.sort((a, b) => {
-      // Sort by date descending
       if (a.date && b.date) return b.date.localeCompare(a.date);
       return 0;
     });
-  }, [versements, annee, filterMembre, membres]);
+  }, [versements, annee, filterSeanceId, filterMembre, membres]);
 
-  // Member totals from recap (membresCalcul)
+  // Member totals - depends on seance filter
   const membreTotals = useMemo(() => {
-    return (recap?.membresCalcul || [])
-      .filter(m => m.actif !== false)
-      .sort((a, b) => (b.calcul?.solde || 0) - (a.calcul?.solde || 0));
-  }, [recap]);
+    if (filterSeanceId === 'all') {
+      // Use recap data for full year
+      return (recap?.membresCalcul || [])
+        .filter(m => m.actif !== false)
+        .sort((a, b) => (b.calcul?.solde || 0) - (a.calcul?.solde || 0));
+    }
+    // Session-specific: compute from versements for this seance
+    const membresActifs = (membres || []).filter(m => m.actif !== false);
+    const sessionVersements = (versements || []).filter(
+      v => v.seance_id === filterSeanceId
+    );
+
+    return membresActifs.map(m => {
+      const mv = sessionVersements.filter(v => v.membre_id === m.id);
+      const epargne = mv.filter(v => v.type === 'epargne' || !v.type)
+        .reduce((s, v) => s + (v.montant || 0), 0);
+      const cotisation = mv.filter(v => v.type === 'contribution')
+        .reduce((s, v) => s + (v.montant || 0), 0);
+      const caisseProjet = mv.filter(v => v.type === 'caisse_projet')
+        .reduce((s, v) => s + (v.montant || 0), 0);
+      const total = epargne + cotisation + caisseProjet;
+      return {
+        ...m,
+        sessionData: { epargne, cotisation, caisseProjet, total },
+      };
+    })
+      .filter(m => m.sessionData.total > 0)
+      .sort((a, b) => (b.sessionData.total || 0) - (a.sessionData.total || 0));
+  }, [recap, filterSeanceId, versements, membres]);
+
+  const isSessionMode = filterSeanceId && filterSeanceId !== 'all';
 
   // Get member name by id
   const getMembreName = (membreId) => {
-    const m = (membres || []).find(m => m.id === membreId);
+    const m = (membres || []).find(mb => mb.id === membreId);
     return m?.nom || '--';
   };
 
   // Get seance label by id
   const getSeanceLabel = (seanceId) => {
-    const s = (seances || []).find(s => s.id === seanceId);
+    const s = (seances || []).find(sc => sc.id === seanceId);
     if (!s) return '--';
-    try {
-      return new Date(s.date).toLocaleDateString('fr-FR');
-    } catch { return s.date || '--'; }
+    try { return new Date(s.date).toLocaleDateString('fr-FR'); }
+    catch { return s.date || '--'; }
   };
 
   const handleAjouter = () => {
     if (!selMembre || !montant || isNaN(parseInt(montant))) {
-      Alert.alert('Erreur', 'Selectionnez un membre et entrez un montant valide.');
+      webSafeInfo('Erreur', 'Selectionnez un membre et entrez un montant valide.');
       return;
     }
     const seanceId = selSeance || (seancesForYear.length > 0 ? seancesForYear[0].id : null);
@@ -84,71 +124,171 @@ export default function EpargneScreen() {
     setMontant('');
     setSelMembre('');
     setSelSeance('');
-    Alert.alert('Versement enregistre', 'Le depot a ete ajoute au journal.');
+    webSafeInfo('Versement enregistre', 'Le depot a ete ajoute au journal.');
   };
+
+  // Session total
+  const sessionTotal = useMemo(() => {
+    if (!isSessionMode) return null;
+    return versementsFiltres.reduce((s, v) => s + (v.montant || 0), 0);
+  }, [isSessionMode, versementsFiltres]);
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <ScrollView contentContainerStyle={[{ padding: SPACING.md, paddingBottom: 100 }, webStyle()]}>
-        <Text style={s.titre}>Epargne membres -- {annee}</Text>
-        <Text style={s.sous}>
+        <Text style={st.titre}>Epargne membres -- {annee}</Text>
+        <Text style={st.sous}>
           Taux interet annuel : {config?.taux_interet_epargne_brut || 7.5}%  -  Retenue : {config?.taux_retenue_epargne || 1.5}% sur interets
         </Text>
 
         {/* Year filter */}
-        <View style={s.filterRow}>
+        <View style={st.filterRow}>
           {ANNEES.map(a => (
             <TouchableOpacity
               key={a}
-              style={[s.filterBtn, annee === a && s.filterBtnActive]}
+              style={[st.filterBtn, annee === a && st.filterBtnActive]}
               onPress={() => setAnnee(a)}
             >
-              <Text style={[s.filterBtnT, annee === a && { color: '#fff' }]}>{a}</Text>
+              <Text style={[st.filterBtnT, annee === a && { color: '#fff' }]}>{a}</Text>
             </TouchableOpacity>
           ))}
         </View>
 
+        {/* Seance filter */}
+        <Text style={{ fontSize: 12, fontWeight: '600', color: COLORS.gray, marginBottom: 4 }}>
+          Filtrer par seance :
+        </Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ marginBottom: SPACING.sm }}
+        >
+          <TouchableOpacity
+            style={[st.chip, filterSeanceId === 'all' && st.chipActive]}
+            onPress={() => setFilterSeanceId('all')}
+          >
+            <Text style={{ fontSize: 11, color: filterSeanceId === 'all' ? '#fff' : COLORS.darkGray }}>
+              Toutes
+            </Text>
+          </TouchableOpacity>
+          {seancesForYear.map(sq => {
+            let lbl = sq.date;
+            try { lbl = new Date(sq.date).toLocaleDateString('fr-FR'); } catch {}
+            const active = filterSeanceId === sq.id;
+            return (
+              <TouchableOpacity
+                key={sq.id}
+                style={[st.chip, active && st.chipActive]}
+                onPress={() => setFilterSeanceId(sq.id)}
+              >
+                <Text style={{ fontSize: 11, color: active ? '#fff' : COLORS.darkGray }}>
+                  {lbl}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
         {/* Member filter */}
         <TextInput
-          style={s.searchInput}
+          style={st.searchInput}
           placeholder="Filtrer par nom de membre..."
           value={filterMembre}
           onChangeText={setFilterMembre}
           placeholderTextColor={COLORS.gray}
         />
 
+        {/* Session total banner */}
+        {isSessionMode && sessionTotal != null && (
+          <View style={{
+            backgroundColor: '#EAF4FF', borderRadius: 10, padding: SPACING.sm,
+            marginBottom: SPACING.sm, flexDirection: 'row', justifyContent: 'space-between',
+            alignItems: 'center',
+          }}>
+            <Text style={{ fontSize: 12, color: COLORS.primary, fontWeight: '600' }}>
+              📅 Seance du {getSeanceLabel(filterSeanceId)}
+            </Text>
+            <Text style={{ fontSize: 14, fontWeight: '800', color: COLORS.primary }}>
+              Total : {formatMontant(sessionTotal)} F
+            </Text>
+          </View>
+        )}
+
         {/* Tableau recapitulatif */}
         <Card style={{ padding: 0, overflow: 'hidden' }}>
-          {/* Header */}
-          <View style={[s.row, { backgroundColor: COLORS.primary }]}>
-            <Text style={[s.cell, s.hdr, { flex: 2 }]}>Membre</Text>
-            <Text style={[s.cell, s.hdr]}>Epargne</Text>
-            <Text style={[s.cell, s.hdr]}>Interets</Text>
-            <Text style={[s.cell, s.hdr]}>Solde</Text>
-          </View>
-          {membreTotals.map((m, i) => (
-            <View key={m.id} style={[s.row, { backgroundColor: i % 2 === 0 ? '#fff' : '#F8FAF9' }]}>
-              <View style={[s.cell, { flex: 2, flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
-                <MemberAvatar member={{ ...m, name: m.nom }} size={28} />
-                <Text style={{ fontSize: 11, flex: 1, color: COLORS.darkGray }} numberOfLines={1}>
-                  {(m.nom || '').split(' ')[0]}
-                </Text>
-              </View>
-              <Text style={[s.cell, { fontSize: 11 }]}>
-                {formatMontant(m.calcul?.totalEpargne || 0)}
-              </Text>
-              <Text style={[s.cell, { fontSize: 11, color: COLORS.secondary }]}>
-                {formatMontant(m.calcul?.interetNet || 0)}
-              </Text>
-              <Text style={[s.cell, { fontSize: 12, fontWeight: '700', color: COLORS.primary }]}>
-                {formatMontant(m.calcul?.solde || 0)}
+          {/* Header - changes based on mode */}
+          {isSessionMode ? (
+            <View style={[st.row, { backgroundColor: COLORS.primary }]}>
+              <Text style={[st.cell, st.hdr, { flex: 2 }]}>Membre</Text>
+              <Text style={[st.cell, st.hdr]}>Epargne</Text>
+              <Text style={[st.cell, st.hdr]}>Cotis.</Text>
+              <Text style={[st.cell, st.hdr]}>C.Projet</Text>
+              <Text style={[st.cell, st.hdr]}>Total</Text>
+            </View>
+          ) : (
+            <View style={[st.row, { backgroundColor: COLORS.primary }]}>
+              <Text style={[st.cell, st.hdr, { flex: 2 }]}>Membre</Text>
+              <Text style={[st.cell, st.hdr]}>Epargne</Text>
+              <Text style={[st.cell, st.hdr]}>Interets</Text>
+              <Text style={[st.cell, st.hdr]}>Solde</Text>
+            </View>
+          )}
+
+          {membreTotals.length === 0 && (
+            <View style={{ padding: SPACING.md }}>
+              <Text style={{ textAlign: 'center', color: COLORS.gray, fontSize: 12 }}>
+                Aucune donnee pour cette selection.
               </Text>
             </View>
-          ))}
+          )}
+
+          {isSessionMode
+            ? membreTotals.map((m, i) => (
+                <View key={m.id} style={[st.row, { backgroundColor: i % 2 === 0 ? '#fff' : '#F8FAF9' }]}>
+                  <View style={[st.cell, { flex: 2, flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
+                    <MemberAvatar member={{ ...m, name: m.nom }} size={28} />
+                    <Text style={{ fontSize: 11, flex: 1, color: COLORS.darkGray }} numberOfLines={1}>
+                      {(m.nom || '').split(' ')[0]}
+                    </Text>
+                  </View>
+                  <Text style={[st.cell, { fontSize: 10 }]}>
+                    {formatMontant(m.sessionData?.epargne || 0)}
+                  </Text>
+                  <Text style={[st.cell, { fontSize: 10 }]}>
+                    {formatMontant(m.sessionData?.cotisation || 0)}
+                  </Text>
+                  <Text style={[st.cell, { fontSize: 10, color: COLORS.accent }]}>
+                    {formatMontant(m.sessionData?.caisseProjet || 0)}
+                  </Text>
+                  <Text style={[st.cell, { fontSize: 11, fontWeight: '700', color: COLORS.primary }]}>
+                    {formatMontant(m.sessionData?.total || 0)}
+                  </Text>
+                </View>
+              ))
+            : membreTotals.map((m, i) => (
+                <View key={m.id} style={[st.row, { backgroundColor: i % 2 === 0 ? '#fff' : '#F8FAF9' }]}>
+                  <View style={[st.cell, { flex: 2, flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
+                    <MemberAvatar member={{ ...m, name: m.nom }} size={28} />
+                    <Text style={{ fontSize: 11, flex: 1, color: COLORS.darkGray }} numberOfLines={1}>
+                      {(m.nom || '').split(' ')[0]}
+                    </Text>
+                  </View>
+                  <Text style={[st.cell, { fontSize: 11 }]}>
+                    {formatMontant(m.calcul?.totalEpargne || 0)}
+                  </Text>
+                  <Text style={[st.cell, { fontSize: 11, color: COLORS.secondary }]}>
+                    {formatMontant(m.calcul?.interetNet || 0)}
+                  </Text>
+                  <Text style={[st.cell, { fontSize: 12, fontWeight: '700', color: COLORS.primary }]}>
+                    {formatMontant(m.calcul?.solde || 0)}
+                  </Text>
+                </View>
+              ))
+          }
         </Card>
 
         {/* Historique des versements */}
-        <Text style={[s.titre, { marginTop: SPACING.lg }]}>📋 Historique des versements</Text>
+        <Text style={[st.titre, { marginTop: SPACING.lg }]}>📋 Historique des versements</Text>
         {versementsFiltres.length === 0 ? (
           <Card>
             <Text style={{ textAlign: 'center', color: COLORS.gray }}>
@@ -178,7 +318,7 @@ export default function EpargneScreen() {
       </ScrollView>
 
       {canAdd && (
-        <TouchableOpacity style={s.fab} onPress={() => setShowForm(true)}>
+        <TouchableOpacity style={st.fab} onPress={() => setShowForm(true)}>
           <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>
             + Enregistrer un versement
           </Text>
@@ -187,16 +327,16 @@ export default function EpargneScreen() {
 
       {/* Formulaire versement */}
       <Modal visible={showForm} transparent animationType="slide">
-        <View style={s.overlay}>
-          <View style={[s.modal, isDesktop && { maxWidth: 500, alignSelf: 'center', width: '100%' }]}>
-            <Text style={s.mTitre}>💰 Nouveau versement epargne</Text>
+        <View style={st.overlay}>
+          <View style={[st.modal, isDesktop && { maxWidth: 500, alignSelf: 'center', width: '100%' }]}>
+            <Text style={st.mTitre}>💰 Nouveau versement epargne</Text>
 
-            <Text style={s.label}>Membre</Text>
+            <Text style={st.label}>Membre</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: SPACING.sm }}>
               {(membres || []).filter(m => m.actif !== false).map(m => (
                 <TouchableOpacity
                   key={m.id}
-                  style={[s.chip, selMembre === m.id && s.chipA]}
+                  style={[st.chip, selMembre === m.id && st.chipActive]}
                   onPress={() => setSelMembre(m.id)}
                 >
                   <Text
@@ -209,7 +349,7 @@ export default function EpargneScreen() {
               ))}
             </ScrollView>
 
-            <Text style={s.label}>Seance</Text>
+            <Text style={st.label}>Seance</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: SPACING.sm }}>
               {seancesForYear.map(sq => {
                 let lbl = sq.date;
@@ -217,7 +357,7 @@ export default function EpargneScreen() {
                 return (
                   <TouchableOpacity
                     key={sq.id}
-                    style={[s.chip, selSeance === sq.id && s.chipA]}
+                    style={[st.chip, selSeance === sq.id && st.chipActive]}
                     onPress={() => setSelSeance(sq.id)}
                   >
                     <Text style={{ fontSize: 11, color: selSeance === sq.id ? '#fff' : COLORS.darkGray }}>
@@ -228,20 +368,20 @@ export default function EpargneScreen() {
               })}
             </ScrollView>
 
-            <Text style={s.label}>Montant (FCFA)</Text>
+            <Text style={st.label}>Montant (FCFA)</Text>
             <TextInput
-              style={s.input}
+              style={st.input}
               placeholder="ex: 100000"
               keyboardType="numeric"
               value={montant}
               onChangeText={setMontant}
             />
 
-            <TouchableOpacity style={s.btnPri} onPress={handleAjouter}>
+            <TouchableOpacity style={st.btnPri} onPress={handleAjouter}>
               <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>Enregistrer</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowForm(false)}>
-              <Text style={s.cancel}>Annuler</Text>
+              <Text style={st.cancel}>Annuler</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -250,7 +390,7 @@ export default function EpargneScreen() {
   );
 }
 
-const s = StyleSheet.create({
+const st = StyleSheet.create({
   titre: { fontSize: 16, fontWeight: '700', color: COLORS.darkGray, marginBottom: 4 },
   sous: { fontSize: 11, color: COLORS.gray, marginBottom: SPACING.sm },
   filterRow: { flexDirection: 'row', gap: 8, marginBottom: SPACING.sm },
@@ -260,6 +400,11 @@ const s = StyleSheet.create({
   },
   filterBtnActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   filterBtnT: { fontSize: 13, fontWeight: '600', color: COLORS.darkGray },
+  chip: {
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1,
+    borderColor: COLORS.border, marginRight: 8, backgroundColor: '#fff',
+  },
+  chipActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   searchInput: {
     borderWidth: 1, borderColor: COLORS.border, borderRadius: 10,
     padding: 12, fontSize: 14, marginBottom: SPACING.sm, backgroundColor: '#fff',
@@ -278,11 +423,6 @@ const s = StyleSheet.create({
   },
   mTitre: { fontSize: 18, fontWeight: '700', color: COLORS.primary, marginBottom: SPACING.md },
   label: { fontSize: 12, fontWeight: '600', color: COLORS.gray, marginBottom: 6 },
-  chip: {
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1,
-    borderColor: COLORS.border, marginRight: 8, backgroundColor: '#fff',
-  },
-  chipA: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   input: {
     borderWidth: 1, borderColor: COLORS.border, borderRadius: 8,
     padding: 14, fontSize: 16, marginBottom: SPACING.md,
