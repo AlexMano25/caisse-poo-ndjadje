@@ -179,6 +179,18 @@ export default function AdminScreen() {
     const retenueTotal = retenueAuto + retManualCredits;
     const caisseProjetTotal = caisseProjetAuto + cpManualCredits;
 
+    // 4. Fonds de caisse (from djangui_fonds ledger)
+    const fcCredits = (fonds || []).filter(f => f.type === 'fonds_caisse' && f.operation === 'credit')
+      .reduce((s, f) => s + (Number(f.montant) || 0), 0);
+    const fcDebits = (fonds || []).filter(f => f.type === 'fonds_caisse' && f.operation === 'debit')
+      .reduce((s, f) => s + (Number(f.montant) || 0), 0);
+
+    // 5. Fonds de développement
+    const fdCredits = (fonds || []).filter(f => f.type === 'fonds_developpement' && f.operation === 'credit')
+      .reduce((s, f) => s + (Number(f.montant) || 0), 0);
+    const fdDebits = (fonds || []).filter(f => f.type === 'fonds_developpement' && f.operation === 'debit')
+      .reduce((s, f) => s + (Number(f.montant) || 0), 0);
+
     return {
       retenueAuto,
       retenueSolde: retenueTotal - retManualDebits,
@@ -188,6 +200,12 @@ export default function AdminScreen() {
       caisseProjetSolde: caisseProjetTotal - cpManualDebits,
       caisseProjetCredits: caisseProjetTotal,
       caisseProjetDebits: cpManualDebits,
+      fondsCaisseSolde: fcCredits - fcDebits,
+      fondsCaisseCredits: fcCredits,
+      fondsCaisseDebits: fcDebits,
+      fondsDevSolde: fdCredits - fdDebits,
+      fondsDevCredits: fdCredits,
+      fondsDevDebits: fdDebits,
     };
   }, [fonds, versements, config]);
 
@@ -195,7 +213,13 @@ export default function AdminScreen() {
     const mt = parseInt(debitMontant) || 0;
     if (mt <= 0) { webAlert('Erreur', 'Montant invalide.'); return; }
     if (!debitDesc.trim()) { webAlert('Erreur', 'Description requise pour un debit.'); return; }
-    const solde = debitType === 'retenue_1_5' ? fondsSoldes.retenueSolde : fondsSoldes.caisseProjetSolde;
+    const soldeMap = {
+      retenue_1_5: fondsSoldes.retenueSolde,
+      caisse_projet: fondsSoldes.caisseProjetSolde,
+      fonds_caisse: fondsSoldes.fondsCaisseSolde,
+      fonds_developpement: fondsSoldes.fondsDevSolde,
+    };
+    const solde = soldeMap[debitType] || 0;
     if (mt > solde) {
       webAlert('Erreur', `Le montant (${formatMontant(mt)}) depasse le solde disponible (${formatMontant(solde)}).`);
       return;
@@ -204,7 +228,8 @@ export default function AdminScreen() {
     setDebitMontant('');
     setDebitDesc('');
     setShowDebitModal(false);
-    webAlert('Debit enregistre', `${formatMontant(mt)} FCFA debites du compte ${debitType === 'retenue_1_5' ? 'Retenues 1.5%' : 'Caisse Projet'}.`);
+    const labelMap = { retenue_1_5: 'Retenues 1.5%', caisse_projet: 'Caisse Projet', fonds_caisse: 'Fonds de Caisse', fonds_developpement: 'Fonds Dev.' };
+    webAlert('Debit enregistre', `${formatMontant(mt)} FCFA debites du compte ${labelMap[debitType] || debitType}.`);
   };
 
   const handleCredit = async () => {
@@ -214,7 +239,8 @@ export default function AdminScreen() {
     setCreditMontant('');
     setCreditDesc('');
     setShowCreditModal(false);
-    webAlert('Credit enregistre', `${formatMontant(mt)} FCFA credites au compte ${creditType === 'retenue_1_5' ? 'Retenues 1.5%' : 'Caisse Projet'}.`);
+    const labelMap = { retenue_1_5: 'Retenues 1.5%', caisse_projet: 'Caisse Projet', fonds_caisse: 'Fonds de Caisse', fonds_developpement: 'Fonds Dev.' };
+    webAlert('Credit enregistre', `${formatMontant(mt)} FCFA credites au compte ${labelMap[creditType] || creditType}.`);
   };
 
   /* ═══════════ DERIVED DATA ═══════════ */
@@ -1489,6 +1515,53 @@ export default function AdminScreen() {
               </Text>
             </Card>
 
+            {/* ── Fonds de Caisse ── */}
+            <Card style={{ backgroundColor: '#0D47A1', marginBottom: SPACING.md }}>
+              <Text style={{ color: '#90CAF9', fontSize: 11, fontWeight: '600' }}>FONDS DE CAISSE</Text>
+              <Text style={{ color: '#fff', fontSize: 28, fontWeight: '900', marginVertical: 4 }}>
+                {formatMontant(fondsSoldes.fondsCaisseSolde)} FCFA
+              </Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+                <View>
+                  <Text style={{ color: '#90CAF9', fontSize: 10 }}>Total credite</Text>
+                  <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>+{formatMontant(fondsSoldes.fondsCaisseCredits)} F</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={{ color: '#EF9A9A', fontSize: 10 }}>Decaisse</Text>
+                  <Text style={{ color: '#EF9A9A', fontSize: 13, fontWeight: '700' }}>-{formatMontant(fondsSoldes.fondsCaisseDebits)} F</Text>
+                </View>
+              </View>
+              <Text style={{ color: '#90CAF9', fontSize: 10, marginTop: 6 }}>
+                Solde officiel du fonds de caisse (PV Cassation Fev 2026)
+              </Text>
+            </Card>
+
+            {/* ── Fonds de Développement ── */}
+            {fondsSoldes.fondsDevCredits > 0 && (
+              <Card style={{ backgroundColor: '#E65100', marginBottom: SPACING.md }}>
+                <Text style={{ color: '#FFCC80', fontSize: 11, fontWeight: '600' }}>FONDS DE DEVELOPPEMENT</Text>
+                <Text style={{ color: '#fff', fontSize: 28, fontWeight: '900', marginVertical: 4 }}>
+                  {formatMontant(fondsSoldes.fondsDevSolde)} FCFA
+                </Text>
+                <Text style={{ color: '#FFCC80', fontSize: 10, marginTop: 6 }}>
+                  Contribution 40 000 F / membre / an (decision assemblée Fev 2026)
+                </Text>
+              </Card>
+            )}
+
+            {/* ── TOTAL GENERAL ── */}
+            <Card style={{ backgroundColor: '#263238', marginBottom: SPACING.md }}>
+              <Text style={{ color: '#B0BEC5', fontSize: 11, fontWeight: '600' }}>TOTAL GENERAL FONDS</Text>
+              <Text style={{ color: '#fff', fontSize: 28, fontWeight: '900', marginVertical: 4 }}>
+                {formatMontant(
+                  (fondsSoldes.retenueSolde || 0) +
+                  (fondsSoldes.caisseProjetSolde || 0) +
+                  (fondsSoldes.fondsCaisseSolde || 0) +
+                  (fondsSoldes.fondsDevSolde || 0)
+                )} FCFA
+              </Text>
+            </Card>
+
             {/* ── Boutons d'action ── */}
             <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.md }}>
               <TouchableOpacity
@@ -1770,7 +1843,7 @@ export default function AdminScreen() {
             </Text>
 
             <Text style={st.fieldLabel}>Compte a debiter</Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.md }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: SPACING.md }}>
               <TouchableOpacity
                 style={[st.chip, debitType === 'retenue_1_5' && { backgroundColor: '#1B5E20', borderColor: '#1B5E20' }]}
                 onPress={() => setDebitType('retenue_1_5')}
@@ -1785,6 +1858,22 @@ export default function AdminScreen() {
               >
                 <Text style={{ fontSize: 11, fontWeight: '600', color: debitType === 'caisse_projet' ? '#fff' : COLORS.darkGray }}>
                   Caisse Projet ({formatMontant(fondsSoldes.caisseProjetSolde)} F)
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[st.chip, debitType === 'fonds_caisse' && { backgroundColor: '#0D47A1', borderColor: '#0D47A1' }]}
+                onPress={() => setDebitType('fonds_caisse')}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '600', color: debitType === 'fonds_caisse' ? '#fff' : COLORS.darkGray }}>
+                  Fonds Caisse ({formatMontant(fondsSoldes.fondsCaisseSolde)} F)
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[st.chip, debitType === 'fonds_developpement' && { backgroundColor: '#E65100', borderColor: '#E65100' }]}
+                onPress={() => setDebitType('fonds_developpement')}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '600', color: debitType === 'fonds_developpement' ? '#fff' : COLORS.darkGray }}>
+                  Fonds Dev. ({formatMontant(fondsSoldes.fondsDevSolde)} F)
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1886,7 +1975,7 @@ export default function AdminScreen() {
             </Text>
 
             <Text style={st.fieldLabel}>Compte a crediter</Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginBottom: SPACING.md }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: SPACING.md }}>
               <TouchableOpacity
                 style={[st.chip, creditType === 'retenue_1_5' && { backgroundColor: '#1B5E20', borderColor: '#1B5E20' }]}
                 onPress={() => setCreditType('retenue_1_5')}
@@ -1901,6 +1990,22 @@ export default function AdminScreen() {
               >
                 <Text style={{ fontSize: 11, fontWeight: '600', color: creditType === 'caisse_projet' ? '#fff' : COLORS.darkGray }}>
                   Caisse Projet
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[st.chip, creditType === 'fonds_caisse' && { backgroundColor: '#0D47A1', borderColor: '#0D47A1' }]}
+                onPress={() => setCreditType('fonds_caisse')}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '600', color: creditType === 'fonds_caisse' ? '#fff' : COLORS.darkGray }}>
+                  Fonds Caisse
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[st.chip, creditType === 'fonds_developpement' && { backgroundColor: '#E65100', borderColor: '#E65100' }]}
+                onPress={() => setCreditType('fonds_developpement')}
+              >
+                <Text style={{ fontSize: 11, fontWeight: '600', color: creditType === 'fonds_developpement' ? '#fff' : COLORS.darkGray }}>
+                  Fonds Dev.
                 </Text>
               </TouchableOpacity>
             </View>
